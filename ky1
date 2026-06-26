@@ -1,0 +1,6 @@
+return {
+    MasterKey = "SqaysOzelKey",
+    CurrentKey = "SQD1K1_3323",
+    Enabled = true,
+    Message = "Key valid."
+}
