@@ -1,1 +1,1047 @@
+warn("[Sqays] Script started loading...")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local VirtualUser = game:GetService("VirtualUser")
+local player = Players.LocalPlayer
 
+-- Executor detection
+local executorName = "Unknown"
+if syn then
+    executorName = "Synapse"
+elseif http and http.request then
+    executorName = "Delta"
+elseif request then
+    executorName = "Wave"
+elseif http_request then
+    executorName = "Xeno"
+elseif game.HttpGet then
+    executorName = "Standard Roblox"
+end
+warn("[Sqays] Detected executor: " .. executorName)
+
+-- Universal HTTP request fallback (Wave, Synapse Z, Xeno, Codex, Vega X, Delta, Solara)
+local function httpGet(url)
+    local success, result = pcall(function()
+        -- Delta Executor için öncelik
+        if http and http.request then
+            return http.request({Url = url, Method = "GET"}).Body
+        elseif game.HttpGet then
+            return game:HttpGet(url)
+        elseif syn and syn.request then
+            return syn.request({Url = url, Method = "GET"}).Body
+        elseif request then
+            return request({Url = url, Method = "GET"}).Body
+        elseif http_request then
+            return http_request({Url = url, Method = "GET"}).Body
+        end
+    end)
+    if success and result then
+        return result
+    end
+    return nil
+end
+
+-- Universal clipboard fallback
+local function setClipboard(text)
+    local success = pcall(function()
+        if setclipboard then
+            setclipboard(text)
+        elseif syn and syn.write_clipboard then
+            syn.write_clipboard(text)
+        elseif clipboard and clipboard.set then
+            clipboard.set(text)
+        elseif toclipboard then
+            toclipboard(text)
+        end
+    end)
+    return success
+end
+
+-- Universal threading (task.spawn for modern executors, coroutine.wrap for older)
+local function spawn(func)
+    if task and task.spawn then
+        return task.spawn(func)
+    else
+        return coroutine.wrap(func)()
+    end
+end
+
+-- Universal wait function
+local function wait(duration)
+    if task then
+        task.wait(duration)
+    else
+        wait(duration)
+    end
+end
+
+-- Universal getgenv fallback (Delta için öncelik)
+local function getEnv()
+    if getgenv then
+        return getgenv()
+    else
+        return _G
+    end
+end
+
+local loadstringFn = loadstring or load
+if not loadstringFn then
+    warn("[Sqays] loadstring desteklenmiyor. Executor ayarlarini kontrol et.")
+    return
+end
+
+-- Rayfield yükleme (retry mekanizması ile)
+local rayfieldSource = nil
+warn("[Sqays] Starting Rayfield download...")
+for i = 1, 3 do
+    rayfieldSource = httpGet("https://sirius.menu/rayfield")
+    warn("[Sqays] Rayfield download attempt " .. i .. ": " .. tostring(rayfieldSource ~= nil and rayfieldSource ~= ""))
+    if rayfieldSource and rayfieldSource ~= "" then
+        break
+    end
+    warn("[Sqays] Rayfield indirilemedi, tekrar deniyor (" .. i .. "/3)...")
+    wait(1)
+end
+
+if not rayfieldSource or rayfieldSource == "" then
+    warn("[Sqays] Rayfield indirilemedi. Internet/HTTP ayarlarini kontrol et.")
+    return
+end
+warn("[Sqays] Rayfield downloaded successfully")
+
+warn("[Sqays] Loading Rayfield with loadstring...")
+local RayfieldLoader = loadstringFn(rayfieldSource)
+warn("[Sqays] RayfieldLoader type: " .. tostring(type(RayfieldLoader)))
+if type(RayfieldLoader) ~= "function" then
+    warn("[Sqays] Rayfield kodu yuklenemedi. Link gecersiz veya executor loadstring desteklemiyor.")
+    return
+end
+
+warn("[Sqays] Executing RayfieldLoader...")
+local Rayfield = RayfieldLoader()
+warn("[Sqays] Rayfield type: " .. tostring(type(Rayfield)))
+warn("[Sqays] Rayfield.CreateWindow exists: " .. tostring(Rayfield and Rayfield.CreateWindow ~= nil))
+if not Rayfield or type(Rayfield.CreateWindow) ~= "function" then
+    warn("[Sqays] Rayfield baslatilamadi. UI kutuphanesi beklenen sekilde donmedi.")
+    return
+end
+warn("[Sqays] Rayfield initialized successfully")
+
+-- Delta Executor için getgenv kullanımı
+if getgenv then
+    getgenv().SqaysConfig = getgenv().SqaysConfig or {}
+end
+
+-- === CONFIG ===
+local oresFolder = Workspace:WaitForChild("__GAME_CONTENT"):WaitForChild("Ores")
+local WheatStage = "5"
+
+-- getgenv kullanımı (Delta için daha stabil)
+local env = getEnv()
+env.SqaysConfig = env.SqaysConfig or {}
+env.SqaysConfig.MiningSpeed = env.SqaysConfig.MiningSpeed or 0.5
+env.SqaysConfig.HarvestSpeed = env.SqaysConfig.HarvestSpeed or 0.2
+env.SqaysConfig.TierSpeed = env.SqaysConfig.TierSpeed or 0.2
+env.SqaysConfig.RuneSpeed = env.SqaysConfig.RuneSpeed or 0.2
+env.SqaysConfig.TreeSpeed = env.SqaysConfig.TreeSpeed or 0.2
+env.SqaysConfig.WaterPumpSpeed = env.SqaysConfig.WaterPumpSpeed or 0.2
+env.SqaysConfig.IceConvertSpeed = env.SqaysConfig.IceConvertSpeed or 0.2
+env.SqaysConfig.AshConvertSpeed = env.SqaysConfig.AshConvertSpeed or 1
+env.SqaysConfig.BlazeQuestSpeed = env.SqaysConfig.BlazeQuestSpeed or 5
+env.SqaysConfig.ExchangeGemsSpeed = env.SqaysConfig.ExchangeGemsSpeed or 10
+env.SqaysConfig.AutoHarvest = env.SqaysConfig.AutoHarvest or false
+env.SqaysConfig.AutoHarvest2 = env.SqaysConfig.AutoHarvest2 or false
+env.SqaysConfig.AutoHarvest3 = env.SqaysConfig.AutoHarvest3 or false
+env.SqaysConfig.AutoRollTier = env.SqaysConfig.AutoRollTier or false
+env.SqaysConfig.AutoHitTree = env.SqaysConfig.AutoHitTree or false
+env.SqaysConfig.AutoWaterPump = env.SqaysConfig.AutoWaterPump or false
+env.SqaysConfig.AutoBlazeQuest = env.SqaysConfig.AutoBlazeQuest or false
+env.SqaysConfig.AutoConvertWoodToAsh = env.SqaysConfig.AutoConvertWoodToAsh or false
+env.SqaysConfig.AutoExchangeGems = env.SqaysConfig.AutoExchangeGems or false
+env.SqaysConfig.AntiAFK = env.SqaysConfig.AntiAFK or false
+env.SqaysConfig.AutoGainFire = env.SqaysConfig.AutoGainFire or false
+env.SqaysConfig.GainFireSpeed = env.SqaysConfig.GainFireSpeed or 0.5
+
+-- Upgrades Config
+env.SqaysConfig.AutoUpgradeNoob = env.SqaysConfig.AutoUpgradeNoob or false
+env.SqaysConfig.AutoUpgradeGems = env.SqaysConfig.AutoUpgradeGems or false
+env.SqaysConfig.AutoUpgradePlanks = env.SqaysConfig.AutoUpgradePlanks or false
+env.SqaysConfig.AutoUpgradeWater = env.SqaysConfig.AutoUpgradeWater or false
+env.SqaysConfig.UpgradeNoobSpeed = env.SqaysConfig.UpgradeNoobSpeed or 1
+env.SqaysConfig.UpgradeGemsSpeed = env.SqaysConfig.UpgradeGemsSpeed or 1
+env.SqaysConfig.UpgradePlanksSpeed = env.SqaysConfig.UpgradePlanksSpeed or 1
+env.SqaysConfig.UpgradeWaterSpeed = env.SqaysConfig.UpgradeWaterSpeed or 1
+env.SqaysConfig.SelectedNoobUpgrades = env.SqaysConfig.SelectedNoobUpgrades or {}
+env.SqaysConfig.SelectedGemUpgrades = env.SqaysConfig.SelectedGemUpgrades or {}
+env.SqaysConfig.SelectedPlankUpgrades = env.SqaysConfig.SelectedPlankUpgrades or {}
+env.SqaysConfig.SelectedWaterUpgrades = env.SqaysConfig.SelectedWaterUpgrades or {}
+
+-- Chest Config
+env.SqaysConfig.AutoOpenChest = env.SqaysConfig.AutoOpenChest or false
+env.SqaysConfig.ChestType = env.SqaysConfig.ChestType or "Chest"
+
+-- RollAura Config
+env.SqaysConfig.AutoRollAura = env.SqaysConfig.AutoRollAura or false
+env.SqaysConfig.RollAuraSpeed = env.SqaysConfig.RollAuraSpeed or 0.5
+
+-- Alternate Mining Config
+env.SqaysConfig.AlternateMining = env.SqaysConfig.AlternateMining or false
+env.SqaysConfig.WalkDistance = env.SqaysConfig.WalkDistance or 5
+env.SqaysConfig.AlternateOreSelection = env.SqaysConfig.AlternateOreSelection or {}
+
+-- Capsule Config
+env.SqaysConfig.AutoOpenCapsule = env.SqaysConfig.AutoOpenCapsule or false
+env.SqaysConfig.CapsuleType = env.SqaysConfig.CapsuleType or "Super"
+env.SqaysConfig.CapsulePauseMining = env.SqaysConfig.CapsulePauseMining or true
+env.SqaysConfig.CapsuleCheckPrism = env.SqaysConfig.CapsuleCheckPrism or true
+env.SqaysConfig.CapsuleCycleCooldown = env.SqaysConfig.CapsuleCycleCooldown or 3.1
+env.SqaysConfig.CapsuleZoneWait = env.SqaysConfig.CapsuleZoneWait or 0.4
+env.SqaysConfig.CapsuleReturnWait = env.SqaysConfig.CapsuleReturnWait or 0.2
+
+-- Capsule Locations
+local CapsuleLocations = {
+    Super = Vector3.new(615.788757, 9.65342522, 3177.10596),
+    Classic = Vector3.new(-2585.73975, 40.5096664, -656.985413)
+}
+
+-- Capsule Costs
+local CapsuleCosts = {
+    Super = 7500000000,
+    Classic = 1000000000
+}
+
+-- _G için backward compatibility
+_G.MiningSpeed = env.SqaysConfig.MiningSpeed
+_G.HarvestSpeed = env.SqaysConfig.HarvestSpeed
+_G.TierSpeed = env.SqaysConfig.TierSpeed
+_G.RuneSpeed = env.SqaysConfig.RuneSpeed
+_G.TreeSpeed = env.SqaysConfig.TreeSpeed
+_G.WaterPumpSpeed = env.SqaysConfig.WaterPumpSpeed
+_G.IceConvertSpeed = env.SqaysConfig.IceConvertSpeed
+_G.AshConvertSpeed = env.SqaysConfig.AshConvertSpeed
+_G.BlazeQuestSpeed = env.SqaysConfig.BlazeQuestSpeed
+_G.ExchangeGemsSpeed = env.SqaysConfig.ExchangeGemsSpeed
+_G.AutoHarvest = env.SqaysConfig.AutoHarvest
+_G.AutoRollTier = env.SqaysConfig.AutoRollTier
+_G.AutoHitTree = env.SqaysConfig.AutoHitTree
+_G.AutoWaterPump = env.SqaysConfig.AutoWaterPump
+_G.AutoBlazeQuest = env.SqaysConfig.AutoBlazeQuest
+_G.AutoConvertWoodToAsh = env.SqaysConfig.AutoConvertWoodToAsh
+_G.AutoExchangeGems = env.SqaysConfig.AutoExchangeGems
+_G.AntiAFK = env.SqaysConfig.AntiAFK
+_G.AutoGainFire = env.SqaysConfig.AutoGainFire
+
+local M2Settings = {}
+local OreNames = {"Stone", "Coal", "Copper", "Silver", "Iron", "Gold", "Platinum", "Titanium", "Uranium", "Cobalt", "Palladium", "Ruby", "Aetherite", "Celestium", "Voidsteel", "Infinity"}
+local RuneNames = {"Basic", "Super", "Advanced", "Cosmic Prism", "Hacker", "Snowy", "Deepcore"}
+local GemNames = {"All", "Coal", "Iron", "Sliver", "Gold", "Platinum", "Titanium", "Emerald", "Diamond", "Opal", "Jade", "Amber", "Topaz", "Ruby", "Amethyst", "Quartz", "Sapphire", "Uranium", "Crystal", "Obsidian"}
+local RuneSettings = {}
+for _, name in ipairs(RuneNames) do RuneSettings[name] = false end
+local GemsToExchange = {}
+
+local antiIdleConnection = nil
+local antiIdleSaves = 0
+
+local function getMainRemote()
+    return ReplicatedStorage:FindFirstChild("__Net") and ReplicatedStorage.__Net:FindFirstChild("MainRemote")
+end
+
+-- Helper function to get currency amount (for Exchange Gems)
+local function _getCurrencyAmount(currency)
+    local currencies = player.CURRENCIES
+    local folder = currencies:FindFirstChild(currency)
+    if not folder then
+        return nil
+    end
+    local amountFolder = folder:FindFirstChild("Amount")
+    if not amountFolder then
+        return nil
+    end
+    local v = amountFolder:FindFirstChild("1")
+    if not v then
+        return nil
+    end
+    return tonumber(v.Value)
+end
+
+local function setAntiIdle(enabled)
+    env.SqaysConfig.AntiAFK = enabled
+    _G.AntiAFK = enabled
+
+    if antiIdleConnection then
+        antiIdleConnection:Disconnect()
+        antiIdleConnection = nil
+    end
+
+    if not enabled then
+        return
+    end
+
+    antiIdleSaves = 0
+    antiIdleConnection = player.Idled:Connect(function()
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+        antiIdleSaves = antiIdleSaves + 1
+        warn("[Sqays] Anti AFK save: " .. tostring(antiIdleSaves))
+    end)
+end
+
+-- === ANTI AFK DONGUSU ===
+setAntiIdle(false)
+
+-- === DONGULER ===
+
+-- 0. GAIN FIRE
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoGainFire then
+            local MainRemote = getMainRemote()
+            if MainRemote then
+                MainRemote:FireServer("GainFire")
+            end
+            task.wait(env.SqaysConfig.GainFireSpeed)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- 1. HARVEST (Original System)
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoHarvest then
+            local wheats = Workspace:FindFirstChild("__GAME_CONTENT") and Workspace.__GAME_CONTENT:FindFirstChild("Farm")
+            if wheats then
+                for _, wheat in ipairs(wheats:GetChildren()) do
+                    local cd = wheat:FindFirstChild("ClickDetector")
+                    if cd then pcall(fireclickdetector, cd) end
+                end
+            end
+            task.wait(env.SqaysConfig.HarvestSpeed)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- 2. HARVEST (CollectionService Tagged System)
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoHarvest2 then
+            local WheatStage = "5"
+            for _, slot in ipairs(CollectionService:GetTagged("WheatSlot")) do
+                local clickDetector = slot:FindFirstChildOfClass("ClickDetector")
+                local Stage = slot:FindFirstChild(WheatStage)
+
+                if clickDetector and Stage then
+                    fireclickdetector(clickDetector)
+                    task.wait(0.01)
+                end
+            end
+            task.wait(0.1)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- 3. HARVEST (Rayfield Variant - similar to original but optimized)
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoHarvest3 then
+            local wheats = Workspace:FindFirstChild("__GAME_CONTENT") and Workspace.__GAME_CONTENT:FindFirstChild("Farm")
+            if wheats then
+                for _, wheat in ipairs(wheats:GetChildren()) do
+                    local cd = wheat:FindFirstChild("ClickDetector")
+                    if cd then pcall(fireclickdetector, cd) end
+                end
+            end
+            task.wait(env.SqaysConfig.HarvestSpeed)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- 2. STABIL TIER ROLL DONGUSU
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoRollTier then
+            pcall(function()
+                local MainRemote = ReplicatedStorage:FindFirstChild("__Net") and ReplicatedStorage.__Net:FindFirstChild("MainRemote")
+                if MainRemote then
+                    MainRemote:FireServer("RollTier")
+                end
+            end)
+        end
+        task.wait(env.SqaysConfig.TierSpeed)
+    end
+end)
+
+-- 3. STABIL RUNE ROLL DONGUSU
+spawn(function()
+    while true do
+        pcall(function()
+            local MainRemote = ReplicatedStorage:FindFirstChild("__Net") and ReplicatedStorage.__Net:FindFirstChild("MainRemote")
+            if MainRemote then
+                for _, name in ipairs(RuneNames) do
+                    if RuneSettings[name] then
+                        MainRemote:FireServer("RollRune", name)
+                    end
+                end
+            end
+        end)
+        task.wait(env.SqaysConfig.RuneSpeed)
+    end
+end)
+
+-- 4. STABIL TREE HIT DONGUSU
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoHitTree then
+            pcall(function()
+                local MainRemote = ReplicatedStorage:FindFirstChild("__Net") and ReplicatedStorage.__Net:FindFirstChild("MainRemote")
+                if MainRemote and player.FEATURES.TREE.IsSpawned.Value then
+                    MainRemote:FireServer("HitTree")
+                end
+            end)
+        end
+        task.wait(env.SqaysConfig.TreeSpeed)
+    end
+end)
+
+-- 5. WATER PUMP DONGUSU
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoWaterPump then
+            pcall(function()
+                local MainRemote = getMainRemote()
+                if MainRemote then
+                    MainRemote:FireServer("GainWater")
+                end
+            end)
+        end
+        task.wait(env.SqaysConfig.WaterPumpSpeed)
+    end
+end)
+
+-- 6. BLAZE QUEST DONGUSU
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoBlazeQuest then
+            pcall(function()
+                local MainRemote = getMainRemote()
+                if MainRemote then
+                    MainRemote:FireServer("SetUpgradeAutomationPaused", "Fire", false)
+                    MainRemote:FireServer("Blaze")
+                end
+            end)
+        end
+        task.wait(env.SqaysConfig.BlazeQuestSpeed)
+    end
+end)
+
+-- 7. ASH CONVERT
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoConvertWoodToAsh then
+            pcall(function()
+                local MainRemote = getMainRemote()
+                if MainRemote then
+                    MainRemote:FireServer("ConvertWoodToAsh")
+                end
+            end)
+        end
+        task.wait(env.SqaysConfig.AshConvertSpeed)
+    end
+end)
+
+-- 8. EXCHANGE GEMS DONGUSU
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoExchangeGems then
+            pcall(function()
+                local MainRemote = getMainRemote()
+                if MainRemote then
+                    if #GemsToExchange > 0 then
+                        for _, gem in ipairs(GemsToExchange) do
+                            if gem == "All" then
+                                MainRemote:FireServer("ExchangeAllMinerals")
+                                break
+                            end
+
+                            if _getCurrencyAmount(gem) and _getCurrencyAmount(gem) > 0 then
+                                MainRemote:FireServer("ExchangeMineral", gem)
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(env.SqaysConfig.ExchangeGemsSpeed)
+    end
+end)
+
+-- 9. MINING
+local function isOreReady(ore)
+    if not ore or not ore:FindFirstChild("Rock") then
+        return false
+    end
+
+    local ui = ore:FindFirstChild("OresTopUI")
+    local bar = ui and ui:FindFirstChild("Bar")
+    local health = bar and bar:FindFirstChild("Health")
+    if health and health.Text == "Respawning..." then
+        return false
+    end
+
+    return true
+end
+
+local function getBestSelectedOre()
+    for i = #OreNames, 1, -1 do
+        local oreName = OreNames[i]
+        if M2Settings[oreName] then
+            for _, ore in ipairs(oresFolder:GetChildren()) do
+                if ore.Name == oreName and isOreReady(ore) then
+                    return ore
+                end
+            end
+        end
+    end
+    return nil
+end
+
+spawn(function()
+    while true do
+        task.wait(env.SqaysConfig.MiningSpeed)
+        if not env.SqaysConfig.AlternateMining then
+            local ore = getBestSelectedOre()
+            if ore and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                player.Character.HumanoidRootPart.CFrame = ore:GetPivot() + Vector3.new(0, 5, 0)
+            end
+        end
+    end
+end)
+
+-- 10. ALTERNATE MINING (Walk to ore instead of teleport)
+local function getBestAlternateOre()
+    for i = #OreNames, 1, -1 do
+        local oreName = OreNames[i]
+        if table.find(env.SqaysConfig.AlternateOreSelection, oreName) then
+            for _, ore in ipairs(oresFolder:GetChildren()) do
+                if ore.Name == oreName and isOreReady(ore) then
+                    return ore
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- 10. ALTERNATE MINING (Walk to ore instead of teleport)
+spawn(function()
+    while true do
+        if env.SqaysConfig.AlternateMining then
+            local ore = getBestAlternateOre()
+            if ore and player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") then
+                local humanoid = player.Character.Humanoid
+                local hrp = player.Character.HumanoidRootPart
+                local targetPos = ore:GetPivot().Position
+                local currentPos = hrp.Position
+                local distance = (targetPos - currentPos).Magnitude
+
+                if distance > env.SqaysConfig.WalkDistance then
+                    humanoid:MoveTo(targetPos)
+                end
+            end
+        end
+        task.wait(env.SqaysConfig.MiningSpeed)
+    end
+end)
+
+-- 11. UPGRADE LOOPS
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoUpgradeNoob then
+            local MainRemote = getMainRemote()
+            if MainRemote then
+                for _, noobType in ipairs(env.SqaysConfig.SelectedNoobUpgrades) do
+                    pcall(function()
+                        MainRemote:FireServer(table.unpack({
+                            [1] = "UpgradeNoobMax",
+                            [2] = noobType,
+                        }))
+                    end)
+                end
+            end
+            task.wait(env.SqaysConfig.UpgradeNoobSpeed)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoUpgradeGems then
+            local MainRemote = getMainRemote()
+            if MainRemote then
+                for _, gemType in ipairs(env.SqaysConfig.SelectedGemUpgrades) do
+                    pcall(function()
+                        MainRemote:FireServer(table.unpack({
+                            [1] = "UpgradeUpgrade",
+                            [2] = "Gem",
+                            [3] = gemType,
+                        }))
+                    end)
+                end
+            end
+            task.wait(env.SqaysConfig.UpgradeGemsSpeed)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoUpgradePlanks then
+            local MainRemote = getMainRemote()
+            if MainRemote then
+                for _, plankType in ipairs(env.SqaysConfig.SelectedPlankUpgrades) do
+                    pcall(function()
+                        MainRemote:FireServer(table.unpack({
+                            [1] = "UpgradeUpgrade",
+                            [2] = "Planks",
+                            [3] = plankType,
+                        }))
+                    end)
+                end
+            end
+            task.wait(env.SqaysConfig.UpgradePlanksSpeed)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoUpgradeWater then
+            local MainRemote = getMainRemote()
+            if MainRemote then
+                for _, waterType in ipairs(env.SqaysConfig.SelectedWaterUpgrades) do
+                    pcall(function()
+                        MainRemote:FireServer(table.unpack({
+                            [1] = "UpgradeUpgrade",
+                            [2] = "Water",
+                            [3] = waterType,
+                        }))
+                    end)
+                end
+            end
+            task.wait(env.SqaysConfig.UpgradeWaterSpeed)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- 12. CHEST OPEN
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoOpenChest then
+            local MainRemote = getMainRemote()
+            if MainRemote then
+                pcall(function()
+                    MainRemote:FireServer(table.unpack({
+                        [1] = "OpenChest",
+                        [2] = env.SqaysConfig.ChestType,
+                    }))
+                end)
+            end
+            task.wait(0.5)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- 13. ROLL AURA
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoRollAura then
+            local MainRemote = getMainRemote()
+            if MainRemote then
+                pcall(function()
+                    MainRemote:FireServer("RollAura")
+                end)
+            end
+            task.wait(env.SqaysConfig.RollAuraSpeed)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- 14. CAPSULE AUTO-OPEN
+spawn(function()
+    while true do
+        if env.SqaysConfig.AutoOpenCapsule then
+            local capsuleType = env.SqaysConfig.CapsuleType
+            local cost = CapsuleCosts[capsuleType] or math.huge
+            local zone = CapsuleLocations[capsuleType]
+            local char = player.Character
+
+            if not (char and char:FindFirstChild("HumanoidRootPart")) then
+                task.wait(0.5)
+            elseif not zone then
+                warn("[Capsule] Zone not set for " .. capsuleType)
+                task.wait(2)
+            else
+                local prism = _getCurrencyAmount("Prism") or 0
+                if env.SqaysConfig.CapsuleCheckPrism and prism < cost then
+                    warn("[Capsule] Not enough Prism: " .. prism .. " < " .. cost)
+                    task.wait(1)
+                else
+                    if env.SqaysConfig.CapsulePauseMining then
+                        env.SqaysConfig.AutoRollTier = false
+                        task.wait(0.1)
+                    end
+
+                    local minePos = char:GetPivot()
+                    char:PivotTo(CFrame.new(zone))
+                    task.wait(env.SqaysConfig.CapsuleZoneWait)
+
+                    local before = _getCurrencyAmount("Prism") or 0
+                    pcall(function()
+                        local MainRemote = getMainRemote()
+                        if MainRemote then
+                            MainRemote:FireServer("OpenCapsule", capsuleType)
+                        end
+                    end)
+                    task.wait(env.SqaysConfig.CapsuleReturnWait)
+                    local after = _getCurrencyAmount("Prism") or 0
+
+                    char:PivotTo(minePos)
+
+                    if env.SqaysConfig.CapsulePauseMining then
+                        env.SqaysConfig.AutoRollTier = true
+                    end
+
+                    if after < before then
+                        warn("[Capsule] Opened " .. capsuleType .. " (Prism -" .. tostring(before - after) .. ")")
+                    else
+                        warn("[Capsule] No Prism decrease - increase Zone Wait or check zone")
+                    end
+
+                    task.wait(env.SqaysConfig.CapsuleCycleCooldown)
+                end
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- === GUI ===
+warn("[Sqays] Creating GUI window...")
+local Window = Rayfield:CreateWindow({
+    Name = "Sqays Noob Incremental",
+    LoadingTitle = "Loading...",
+    ConfigurationSaving = {Enabled = true, FileName = "SqaysConfig"}
+})
+warn("[Sqays] GUI window created: " .. tostring(Window ~= nil))
+
+-- Mining Tab
+local MiningTab = Window:CreateTab("Mining")
+for _, name in ipairs(OreNames) do
+    M2Settings[name] = false
+    MiningTab:CreateToggle({Name = "Mine " .. name, Callback = function(v) M2Settings[name] = v end})
+end
+
+-- Alternate Mining Tab (New Tab for Walking)
+local AlternateMiningTab = Window:CreateTab("Alternate Mining")
+
+AlternateMiningTab:CreateSection("Enable Alternate Mining")
+AlternateMiningTab:CreateToggle({Name = "Enable Alternate Mining", Callback = function(v) env.SqaysConfig.AlternateMining = v end})
+
+AlternateMiningTab:CreateSection("Ore Selection")
+for _, name in ipairs(OreNames) do
+    AlternateMiningTab:CreateToggle({Name = "Mine " .. name, Callback = function(v)
+        if v then
+            if not table.find(env.SqaysConfig.AlternateOreSelection, name) then
+                table.insert(env.SqaysConfig.AlternateOreSelection, name)
+            end
+        else
+            local index = table.find(env.SqaysConfig.AlternateOreSelection, name)
+            if index then
+                table.remove(env.SqaysConfig.AlternateOreSelection, index)
+            end
+        end
+    end})
+end
+
+AlternateMiningTab:CreateSection("Walk Settings")
+AlternateMiningTab:CreateSlider({
+    Name = "Walk Distance Threshold",
+    Range = {1, 50},
+    Increment = 1,
+    Suffix = " studs",
+    CurrentValue = env.SqaysConfig.WalkDistance,
+    Callback = function(v) env.SqaysConfig.WalkDistance = v end
+})
+
+-- Upgrade Speed Options (defined before use)
+local UpgradeSpeedOptions = {"0.00001", "0.0001", "0.001", "0.01", "0.05", "0.5", "1", "3", "5", "10", "15", "20", "30", "50"}
+
+-- Upgrades Tab
+local UpgradesTab = Window:CreateTab("Upgrades")
+
+UpgradesTab:CreateSection("Noob Upgrades")
+UpgradesTab:CreateToggle({Name = "Auto Upgrade Noobs", Callback = function(v) env.SqaysConfig.AutoUpgradeNoob = v end})
+UpgradesTab:CreateDropdown({
+    Name = "Select Noob Types",
+    Options = {"Fisherman", "Knight", "Explorer", "Magician"},
+    CurrentOption = {},
+    MultipleOptions = true,
+    Callback = function(Options) env.SqaysConfig.SelectedNoobUpgrades = Options end
+})
+UpgradesTab:CreateDropdown({
+    Name = "Upgrade Speed (s)",
+    Options = UpgradeSpeedOptions,
+    CurrentOption = {"1"},
+    Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.UpgradeNoobSpeed = val end
+})
+
+UpgradesTab:CreateSection("Upgrades With Gems")
+UpgradesTab:CreateToggle({Name = "Auto Upgrade Gems", Callback = function(v) env.SqaysConfig.AutoUpgradeGems = v end})
+UpgradesTab:CreateDropdown({
+    Name = "Select Gem Upgrades",
+    Options = {"MoreGems", "MoreOreStats", "MoreOof"},
+    CurrentOption = {},
+    MultipleOptions = true,
+    Callback = function(Options) env.SqaysConfig.SelectedGemUpgrades = Options end
+})
+UpgradesTab:CreateDropdown({
+    Name = "Upgrade Speed (s)",
+    Options = UpgradeSpeedOptions,
+    CurrentOption = {"1"},
+    Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.UpgradeGemsSpeed = val end
+})
+
+UpgradesTab:CreateSection("Upgrades With Planks")
+UpgradesTab:CreateToggle({Name = "Auto Upgrade Planks", Callback = function(v) env.SqaysConfig.AutoUpgradePlanks = v end})
+UpgradesTab:CreateDropdown({
+    Name = "Select Plank Upgrades",
+    Options = {"WaterFromPlanks", "MorePlanks"},
+    CurrentOption = {},
+    MultipleOptions = true,
+    Callback = function(Options) env.SqaysConfig.SelectedPlankUpgrades = Options end
+})
+UpgradesTab:CreateDropdown({
+    Name = "Upgrade Speed (s)",
+    Options = UpgradeSpeedOptions,
+    CurrentOption = {"1"},
+    Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.UpgradePlanksSpeed = val end
+})
+
+UpgradesTab:CreateSection("Upgrades With Water")
+UpgradesTab:CreateToggle({Name = "Auto Upgrade Water", Callback = function(v) env.SqaysConfig.AutoUpgradeWater = v end})
+UpgradesTab:CreateDropdown({
+    Name = "Select Water Upgrades",
+    Options = {"MoreGems", "MorePlanks"},
+    CurrentOption = {},
+    MultipleOptions = true,
+    Callback = function(Options) env.SqaysConfig.SelectedWaterUpgrades = Options end
+})
+UpgradesTab:CreateDropdown({
+    Name = "Upgrade Speed (s)",
+    Options = UpgradeSpeedOptions,
+    CurrentOption = {"1"},
+    Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.UpgradeWaterSpeed = val end
+})
+
+-- Capsules Tab
+local CapsulesTab = Window:CreateTab("Capsules")
+
+CapsulesTab:CreateSection("Auto Open Capsule")
+CapsulesTab:CreateToggle({Name = "Enable Auto Open Capsule", Callback = function(v) env.SqaysConfig.AutoOpenCapsule = v end})
+
+CapsulesTab:CreateSection("Capsule Type")
+CapsulesTab:CreateDropdown({
+    Name = "Select Capsule Type",
+    Options = {"Super", "Classic"},
+    CurrentOption = {"Super"},
+    Callback = function(o) env.SqaysConfig.CapsuleType = o[1] end
+})
+
+CapsulesTab:CreateSection("Settings")
+CapsulesTab:CreateToggle({Name = "Pause Mining During Open", Callback = function(v) env.SqaysConfig.CapsulePauseMining = v end})
+CapsulesTab:CreateToggle({Name = "Check Prism Before Open", Callback = function(v) env.SqaysConfig.CapsuleCheckPrism = v end})
+
+CapsulesTab:CreateSection("Timing Settings")
+CapsulesTab:CreateSlider({
+    Name = "Cycle Cooldown (s)",
+    Range = {3, 10},
+    Increment = 0.1,
+    Suffix = " s",
+    CurrentValue = env.SqaysConfig.CapsuleCycleCooldown,
+    Callback = function(v) env.SqaysConfig.CapsuleCycleCooldown = v end
+})
+CapsulesTab:CreateSlider({
+    Name = "Zone Wait (s)",
+    Range = {0.1, 1.5},
+    Increment = 0.05,
+    Suffix = " s",
+    CurrentValue = env.SqaysConfig.CapsuleZoneWait,
+    Callback = function(v) env.SqaysConfig.CapsuleZoneWait = v end
+})
+CapsulesTab:CreateSlider({
+    Name = "Return Wait (s)",
+    Range = {0.1, 1},
+    Increment = 0.05,
+    Suffix = " s",
+    CurrentValue = env.SqaysConfig.CapsuleReturnWait,
+    Callback = function(v) env.SqaysConfig.CapsuleReturnWait = v end
+})
+
+
+-- Automation Tab
+local RollTab = Window:CreateTab("Automation")
+
+RollTab:CreateSection("Harvest & Quest")
+RollTab:CreateToggle({Name = "Auto Harvest 1 (Original)", Callback = function(v) env.SqaysConfig.AutoHarvest = v; _G.AutoHarvest = v end})
+RollTab:CreateToggle({Name = "Auto Harvest 2 (Tagged)", Callback = function(v) env.SqaysConfig.AutoHarvest2 = v end})
+RollTab:CreateToggle({Name = "Auto Harvest 3 (Optimized)", Callback = function(v) env.SqaysConfig.AutoHarvest3 = v end})
+RollTab:CreateToggle({Name = "Auto Upgrade Quest", Callback = function(v) env.SqaysConfig.AutoBlazeQuest = v; _G.AutoBlazeQuest = v end})
+RollTab:CreateToggle({Name = "Auto Gain Fire", Callback = function(v) env.SqaysConfig.AutoGainFire = v; _G.AutoGainFire = v end})
+
+RollTab:CreateSection("Chest")
+RollTab:CreateToggle({Name = "Auto Open Chest", Callback = function(v) env.SqaysConfig.AutoOpenChest = v end})
+RollTab:CreateDropdown({
+    Name = "Chest Type",
+    Options = {"Chest", "GoldenChest"},
+    CurrentOption = {"Chest"},
+    Callback = function(o) env.SqaysConfig.ChestType = o[1] end
+})
+
+RollTab:CreateSection("Roll Aura")
+RollTab:CreateToggle({Name = "Auto Roll Aura", Callback = function(v) env.SqaysConfig.AutoRollAura = v end})
+RollTab:CreateSlider({
+    Name = "Roll Aura Speed (s)",
+    Range = {0.01, 10},
+    Increment = 0.01,
+    Suffix = " s",
+    CurrentValue = env.SqaysConfig.RollAuraSpeed,
+    Callback = function(v) env.SqaysConfig.RollAuraSpeed = v end
+})
+
+RollTab:CreateSection("Roll & Tree")
+RollTab:CreateToggle({Name = "Auto Roll Tier", Callback = function(v) env.SqaysConfig.AutoRollTier = v; _G.AutoRollTier = v end})
+RollTab:CreateToggle({Name = "Auto Hit Tree", Callback = function(v) env.SqaysConfig.AutoHitTree = v; _G.AutoHitTree = v end})
+RollTab:CreateToggle({Name = "Auto Water Pump", Callback = function(v) env.SqaysConfig.AutoWaterPump = v; _G.AutoWaterPump = v end})
+
+RollTab:CreateSection("Runes")
+for _, name in ipairs(RuneNames) do
+    RollTab:CreateToggle({Name = "Roll " .. name, Callback = function(v) RuneSettings[name] = v end})
+end
+
+RollTab:CreateSection("Exchange Gems")
+RollTab:CreateToggle({Name = "Auto Exchange Gems", Callback = function(v) env.SqaysConfig.AutoExchangeGems = v; _G.AutoExchangeGems = v end})
+RollTab:CreateDropdown({
+    Name = "Gems to Exchange",
+    Options = GemNames,
+    CurrentOption = {},
+    Callback = function(Options)
+        GemsToExchange = Options
+    end
+})
+
+RollTab:CreateSection("Teleport")
+RollTab:CreateButton({
+    Name = "Teleport to Spawn",
+    Callback = function()
+        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            player.Character.HumanoidRootPart.CFrame = CFrame.new(1145.71, 12.47, -596.61)
+        end
+    end
+})
+
+-- Ice And Ash Convert Tab
+local IceTab = Window:CreateTab("Ice And Ash Convert")
+for i = 1, 12 do
+    IceTab:CreateToggle({
+        Name = "Convert Level " .. i,
+        Callback = function(Value)
+            getEnv()["AutoIce_" .. i] = Value
+            spawn(function()
+                while getEnv()["AutoIce_" .. i] do
+                    pcall(function()
+                        local MainRemote = ReplicatedStorage:FindFirstChild("__Net") and ReplicatedStorage.__Net:FindFirstChild("MainRemote")
+                        if MainRemote then MainRemote:FireServer("PressButton", i) end
+                    end)
+                    task.wait(env.SqaysConfig.IceConvertSpeed)
+                end
+            end)
+        end,
+    })
+end
+
+IceTab:CreateSection("Ash Convert")
+IceTab:CreateToggle({Name = "Auto Convert Wood To Ash", Callback = function(v) env.SqaysConfig.AutoConvertWoodToAsh = v; _G.AutoConvertWoodToAsh = v end})
+
+-- Speed Tab
+local SpeedTab = Window:CreateTab("Speed")
+local SpeedOptions = {"0.00001", "0.0001", "0.001", "0.01", "0.05", "0.1", "0.2", "0.5", "1", "2", "3", "5", "10"}
+local UpgradeSpeedOptions = {"0.00001", "0.0001", "0.001", "0.01", "0.05", "0.5", "1", "3", "5", "10", "15", "20", "30", "50"}
+
+SpeedTab:CreateSection("Main Speeds")
+SpeedTab:CreateDropdown({Name = "Mining Speed", Options = SpeedOptions, CurrentOption = {"0.5"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.MiningSpeed = val; _G.MiningSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Tier Speed", Options = SpeedOptions, CurrentOption = {"0.2"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.TierSpeed = val; _G.TierSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Rune Speed", Options = SpeedOptions, CurrentOption = {"0.2"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.RuneSpeed = val; _G.RuneSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Water Pump Speed", Options = SpeedOptions, CurrentOption = {"0.2"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.WaterPumpSpeed = val; _G.WaterPumpSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Ice Convert Speed", Options = SpeedOptions, CurrentOption = {"0.2"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.IceConvertSpeed = val; _G.IceConvertSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Ash Convert Speed", Options = SpeedOptions, CurrentOption = {"1"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.AshConvertSpeed = val; _G.AshConvertSpeed = val end})
+
+SpeedTab:CreateSection("Extra Speeds")
+SpeedTab:CreateDropdown({Name = "Harvest Speed", Options = SpeedOptions, CurrentOption = {"0.2"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.HarvestSpeed = val; _G.HarvestSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Tree Speed", Options = SpeedOptions, CurrentOption = {"0.2"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.TreeSpeed = val; _G.TreeSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Blaze Quest Speed", Options = SpeedOptions, CurrentOption = {"5"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.BlazeQuestSpeed = val; _G.BlazeQuestSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Exchange Gems Speed", Options = SpeedOptions, CurrentOption = {"10"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.ExchangeGemsSpeed = val; _G.ExchangeGemsSpeed = val end})
+SpeedTab:CreateDropdown({Name = "Gain Fire Speed", Options = SpeedOptions, CurrentOption = {"0.5"}, Callback = function(o) local val = tonumber(o[1]); env.SqaysConfig.GainFireSpeed = val; _G.GainFireSpeed = val end})
+
+-- Misc Tab
+local MiscTab = Window:CreateTab("Misc")
+
+MiscTab:CreateSection("Anti AFK")
+MiscTab:CreateToggle({Name = "Anti AFK", Callback = function(v) setAntiIdle(v) end})
+
+MiscTab:CreateSection("Dev Boost")
+MiscTab:CreateButton({
+    Name = "Get Dev Follow Boost",
+    Callback = function()
+        local followData = player.EXTRA and player.EXTRA.FOLLOWS
+        if followData then
+            for _, v in ipairs(followData:GetChildren()) do
+                if v:IsA("BoolValue") then
+                    v.Value = true
+                end
+            end
+            local MainRemote = getMainRemote()
+            if MainRemote then
+                MainRemote:FireServer("CheckAllFollows")
+            end
+            warn("[Sqays] Dev follow boost activated")
+        else
+            warn("[Sqays] Follow data not found")
+        end
+    end
+})
+
+Rayfield:LoadConfiguration()
