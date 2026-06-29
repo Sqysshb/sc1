@@ -1,0 +1,150 @@
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+ 
+local Window = Rayfield:CreateWindow({
+   Name = "Sqays Hub - [WORLD 3] +1 Aura Per Click",
+   LoadingTitle = "Sqays Hub Loading...",
+   LoadingSubtitle = "made by sqays",
+   Theme = "Default",
+})
+ 
+local Tab = Window:CreateTab("Automation", "swords")
+ 
+-- 1. Farming
+local function startFarming(pos)
+    return game:GetService("RunService").RenderStepped:Connect(function()
+        local char = game.Players.LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            char.HumanoidRootPart.CFrame = pos
+        end
+    end)
+end
+ 
+-- World 2 aggressive farming (teleports in bursts to bypass anti-cheat)
+local function startAggressiveFarming(pos)
+    return task.spawn(function()
+        while _G.W2Farm do
+            -- Teleport 4 times quickly
+            for i = 1, 4 do
+                if not _G.W2Farm then break end
+                local char = game.Players.LocalPlayer.Character
+                if char and char:FindFirstChild("HumanoidRootPart") then
+                    char.HumanoidRootPart.CFrame = pos
+                end
+                task.wait(0.05)
+            end
+            -- Wait 2 seconds for character to fall
+            task.wait(0.7)
+        end
+    end)
+end
+ 
+Tab:CreateToggle({
+   Name = "World 1 Win Farm",
+   CurrentValue = false,
+   Callback = function(Value)
+      _G.W1Farm = Value
+      if _G.W1Farm then _G.C1 = startFarming(CFrame.new(-3483.18, 72.8, -20.72))
+      elseif _G.C1 then _G.C1:Disconnect() end
+   end,
+})
+ 
+Tab:CreateToggle({
+   Name = "World 2 Win Farm",
+   CurrentValue = false,
+   Callback = function(Value)
+      _G.W2Farm = Value
+      if _G.W2Farm then _G.C2 = startAggressiveFarming(CFrame.new(-2873.65, 32.40, -1020.79))
+      end
+   end,
+})
+ 
+Tab:CreateToggle({
+   Name = "World 3 Win Farm",
+   CurrentValue = false,
+   Callback = function(Value)
+      _G.W3Farm = Value
+      if _G.W3Farm then _G.C3 = startFarming(CFrame.new(-1465.56, 66.27, -19.63))
+      elseif _G.C3 then _G.C3:Disconnect() end
+   end,
+})
+ 
+-- 2. Fast Auto Click
+local clickRemote = game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("AuraRunnerTrainClick")
+Tab:CreateToggle({
+   Name = "Fast Auto Click",
+   CurrentValue = false,
+   Callback = function(Value)
+      _G.Clicking = Value
+      task.spawn(function()
+         while _G.Clicking do
+            local args = { [1] = {} }
+            pcall(function() clickRemote:FireServer(unpack(args)) end)
+            task.wait(0.1)
+         end
+      end)
+   end,
+})
+ 
+-- 3. Auto Rebirth
+local rebirthRemote = game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("AuraRunnerRebirth")
+Tab:CreateToggle({
+   Name = "Auto Rebirth",
+   CurrentValue = false,
+   Callback = function(Value)
+      _G.Rebirthing = Value
+      task.spawn(function()
+         while _G.Rebirthing do
+            pcall(function() rebirthRemote:InvokeServer({}) end)
+            task.wait(1)
+         end
+      end)
+   end,
+})
+ 
+-- 4. Auto Wheel Spin
+local spinWheelFolder = game:GetService("ReplicatedStorage"):WaitForChild("SpinWheel")
+Tab:CreateToggle({
+   Name = "Auto Wheel Spin",
+   CurrentValue = false,
+   Callback = function(Value)
+      _G.Spinning = Value
+      task.spawn(function()
+         while _G.Spinning do
+            pcall(function()
+               if spinWheelFolder:WaitForChild("GetFreeSpinStatus"):InvokeServer() then
+                  spinWheelFolder:WaitForChild("ClaimFreeSpin"):InvokeServer()
+                  task.wait(0.5)
+                  spinWheelFolder:WaitForChild("GetReward"):InvokeServer()
+               end
+            end)
+            task.wait(10)
+         end
+      end)
+   end,
+})
+ 
+-- 5. Hatching (Eggs 1-5 and Egg 8)
+local hatchRemote = game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("AuraRunnerHatchEgg")
+ 
+local function createHatchToggle(eggName)
+   Tab:CreateToggle({
+      Name = "Auto Hatch Egg world2 " .. eggName,
+      CurrentValue = false,
+      Callback = function(Value)
+         _G["Hatch"..eggName] = Value
+         task.spawn(function()
+            while _G["Hatch"..eggName] do
+               local args = { [1] = { ["eggModelName"] = tostring(eggName) } }
+               pcall(function() hatchRemote:InvokeServer(unpack(args)) end)
+               task.wait(0.5)
+            end
+         end)
+      end,
+   })
+end
+ 
+for i = 1, 5 do createHatchToggle(i) end
+createHatchToggle(8)
+ 
+Rayfield:Notify({Title = "Sqays Hub", Content = "Script loaded successfully! made by sqays", Duration = 5})
+ 
