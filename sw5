@@ -1,1 +1,1411 @@
+--[======================================================================[
+    Sqays Hub — Noob Incremental  |  Production v4.3
+    Full rewrite: executor-agnostic, hardened error handling,
+    closure-safe UI, adaptive mining, minimal allocations.
+--]======================================================================]
 
+--[[ -------------------- Bootstrap & Environment -------------------- ]]
+local function tryCall(fn, ...)
+    -- Unified pcall: returns (true, result) or (false, error_message)
+    -- Use this for ALL external API calls — executor functions, Roblox API, etc.
+    return pcall(fn, ...)
+end
+
+local function safeWarn(msg)
+    tryCall(warn, msg)
+end
+
+safeWarn("[Sqays Hub] Initialising v4.3…")
+
+-- Resolve shared environment (tries every known method)
+local _ENV_REF
+for _, method in ipairs({
+    function() return getgenv() end,
+    function() return _G end,
+    function() return shared end,
+}) do
+    local ok, val = tryCall(method)
+    if ok and type(val) == "table" then
+        _ENV_REF = val
+        break
+    end
+end
+if not _ENV_REF then
+    _ENV_REF = {}
+    safeWarn("[Sqays Hub] WARNING: Isolated environment — presets won't persist between sessions")
+end
+
+-- Single-instance guard
+if _ENV_REF.SqaysLoaded then
+    safeWarn("[Sqays Hub] Already running. Skipping.")
+    return
+end
+_ENV_REF.SqaysLoaded = true
+_ENV_REF.SqaysStop = false
+
+--[[ -------------------- Service Resolution -------------------- ]]
+local function getService(name)
+    local ok, svc = tryCall(function()
+        return (game and game.GetService and game:GetService(name))
+    end)
+    if not ok or not svc then
+        safeWarn("[Sqays Hub] Service unavailable: " .. tostring(name))
+    end
+    return svc
+end
+
+local Players            = getService("Players")
+local ReplicatedStorage  = getService("ReplicatedStorage")
+local Workspace          = getService("Workspace")
+local CollectionService  = getService("CollectionService")
+local VirtualUser        = getService("VirtualUser")
+local HttpService        = getService("HttpService")
+
+if not (Players and ReplicatedStorage) then
+    safeWarn("[Sqays Hub] CRITICAL: Core services missing. Aborting.")
+    return
+end
+
+local Player = nil
+for _ = 1, 5 do
+    local ok, plr = tryCall(function() return Players.LocalPlayer end)
+    if ok and plr then Player = plr; break end
+    tryCall(wait, 0.5)
+end
+if not Player then
+    safeWarn("[Sqays Hub] CRITICAL: Cannot resolve LocalPlayer. Aborting.")
+    return
+end
+
+--[[ -------------------- Executor Identification -------------------- ]]
+local executorId = "Unknown"
+tryCall(function()
+    if identifyexecutor then executorId = identifyexecutor() or "Unknown" end
+end)
+
+-- Feature detection (more reliable than name-matching)
+local hasTaskWait   = tryCall(function() return task ~= nil and task.wait ~= nil end)
+local hasTaskSpawn  = tryCall(function() return task ~= nil and task.spawn ~= nil end)
+local hasTaskDefer  = tryCall(function() return task ~= nil and task.defer ~= nil end)
+local hasSynRequest = tryCall(function() return syn ~= nil and syn.request ~= nil end)
+local hasLoadString = tryCall(function() return loadstring ~= nil or load ~= nil end)
+local hasIsFile     = tryCall(function() return isfile ~= nil end)
+local hasReadFile   = tryCall(function() return readfile ~= nil end)
+local hasWriteFile  = tryCall(function() return writefile ~= nil end)
+local hasCoroutineClose = tryCall(function() return coroutine.close ~= nil end)
+
+safeWarn("[Sqays Hub] Executor: " .. executorId)
+
+--[[ -------------------- Core Utilities -------------------- ]]
+
+--- Yield for `seconds` using the best available scheduler.
+local function threadWait(seconds)
+    if hasTaskWait then
+        local ok = tryCall(task.wait, seconds)
+        if ok then return end
+    end
+    local deadline = (tryCall(tick)) and tick() + seconds or os.clock() + seconds
+    repeat tryCall(wait, 0.03) until (tryCall(tick) and tick() or os.clock()) >= deadline
+end
+
+--- Tracked coroutine registry (auto-prunes dead threads).
+local _threadPruneCount = 0
+local _activeThreads = {}
+
+local function pruneDeadThreads()
+    local alive, n = {}, 0
+    for _, t in ipairs(_activeThreads) do
+        if coroutine.status(t) ~= "dead" then
+            n = n + 1
+            alive[n] = t
+        end
+    end
+    _activeThreads = alive
+end
+
+local function trackThread(co)
+    if type(co) ~= "thread" then return end
+    _threadPruneCount = _threadPruneCount + 1
+    if _threadPruneCount > 50 then
+        _threadPruneCount = 0
+        pruneDeadThreads()
+    end
+    _activeThreads[#_activeThreads + 1] = co
+end
+
+local function killAllThreads()
+    for _, t in ipairs(_activeThreads) do
+        if coroutine.status(t) ~= "dead" then
+            if hasCoroutineClose then tryCall(coroutine.close, t) end
+        end
+    end
+    _activeThreads = {}
+end
+
+--- Spawn a tracked, error-guarded coroutine.
+local function spawnThread(fn)
+    local wrapper = function()
+        local ok, err = tryCall(fn)
+        if not ok then safeWarn("[Sqays Hub] Thread error: " .. tostring(err)) end
+    end
+    -- Prefer task.spawn (non-blocking), then coroutine, then defer, then sync
+    if hasTaskSpawn then
+        tryCall(task.spawn, wrapper)
+        return
+    end
+    local co = coroutine.create(wrapper)
+    if co then
+        trackThread(co)
+        tryCall(coroutine.resume, co)
+        return
+    end
+    if hasTaskDefer then
+        tryCall(task.defer, wrapper)
+        return
+    end
+    tryCall(wrapper) -- desperate fallback: runs inline
+end
+
+--[[ -------------------- HTTP & File I/O -------------------- ]]
+
+local HTTP_DRIVERS = {
+    function(url) -- syn.request
+        if not hasSynRequest then return nil end
+        local r = syn.request({Url = url, Method = "GET"})
+        return r and r.Body
+    end,
+    function(url) -- http.request
+        if not http or not http.request then return nil end
+        local r = http.request({Url = url, Method = "GET"})
+        return r and r.Body
+    end,
+    function(url) -- request (global)
+        if not request then return nil end
+        local r = request({Url = url, Method = "GET"})
+        return r and r.Body
+    end,
+    function(url) -- http_request (global)
+        if not http_request then return nil end
+        local r = http_request({Url = url, Method = "GET"})
+        return r and r.Body
+    end,
+    function(url) -- game:HttpGet (Roblox built-in)
+        if not (game and game.HttpGet) then return nil end
+        return game:HttpGet(url)
+    end,
+    function(url) -- game:HttpGetAsync (newer Roblox)
+        if not (game and game.HttpGetAsync) then return nil end
+        return game:HttpGetAsync(url)
+    end,
+}
+
+local function httpGet(url)
+    for _, driver in ipairs(HTTP_DRIVERS) do
+        local ok, body = tryCall(driver, url)
+        if ok and type(body) == "string" and #body > 100 then
+            return body
+        end
+    end
+    return nil
+end
+
+local function fileExists(path)
+    if not hasIsFile then return false end
+    local ok, exists = tryCall(function() return isfile(path) end)
+    return ok and exists
+end
+
+local function readFileSafe(path)
+    if not (fileExists(path) and hasReadFile) then return nil end
+    local data
+    tryCall(function() data = readfile(path) end)
+    return data
+end
+
+local function writeFileSafe(path, content)
+    if not hasWriteFile then return end
+    tryCall(function() writefile(path, content) end)
+end
+
+local function deleteFileSafe(path)
+    if not fileExists(path) then return end
+    tryCall(function() delfile(path) end)
+end
+
+--[[ -------------------- ClickDetector / Remote Helpers -------------------- ]]
+
+local function fireClickDetector(cd)
+    if not cd then return end
+    if fireclickdetector then
+        tryCall(fireclickdetector, cd)
+        return
+    end
+    if firetouchinterest and Player and Player.Character then
+        tryCall(firetouchinterest, cd, Player.Character, 0)
+        tryCall(firetouchinterest, cd, Player.Character, 1)
+        return
+    end
+    tryCall(function()
+        local remote = cd:FindFirstChildOfClass("RemoteEvent")
+        if remote then remote:FireServer() end
+    end)
+end
+
+-- Remote resolution (cached for 5s to avoid repeated FindFirstChild)
+local _remoteCache = nil
+local _remoteCacheTime = 0
+
+local function getRemote()
+    local now = (tryCall(tick) and tick()) or os.clock()
+    if _remoteCache and (now - _remoteCacheTime) < 5 then
+        local parent
+        tryCall(function() parent = _remoteCache.Parent end)
+        if parent then return _remoteCache end
+    end
+    _remoteCacheTime = now
+    tryCall(function()
+        local net = ReplicatedStorage:FindFirstChild("__Net")
+        _remoteCache = net and net:FindFirstChild("MainRemote")
+    end)
+    return _remoteCache
+end
+
+local function fireRemote(...)
+    local remote = getRemote()
+    if remote then
+        tryCall(remote.FireServer, remote, ...)
+    end
+end
+
+--[[ -------------------- Player State Helpers -------------------- ]]
+
+local function getCurrency(name)
+    if not Player then return 0 end
+    local ok, result = tryCall(function()
+        local currencies = Player:FindFirstChild("CURRENCIES")
+        if not currencies then return nil end
+        local folder = currencies:FindFirstChild(name)
+        if not folder then return nil end
+        local amount = folder:FindFirstChild("Amount")
+        if not amount then return nil end
+        local val = amount:FindFirstChild("1")
+        return val and tonumber(val.Value)
+    end)
+    return (ok and result) or 0
+end
+
+local function getRoot()
+    if not Player then return nil end
+    local char = Player.Character
+    if not char then return nil end
+    return char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHumanoid()
+    if not Player then return nil end
+    local char = Player.Character
+    if not char then return nil end
+    return char:FindFirstChild("Humanoid")
+end
+
+--[[ -------------------- Configuration -------------------- ]]
+
+local env = _ENV_REF
+local CFG = env.SqaysConfig or {}
+env.SqaysConfig = CFG
+
+local DEFAULTS = {
+    -- Speeds
+    MiningSpeed        = 0.001,  HarvestSpeed       = 0.2,   TierSpeed          = 0.2,
+    RuneSpeed          = 0.2,    TreeSpeed          = 0.2,   WaterPumpSpeed     = 0.2,
+    IceConvertSpeed    = 0.2,    AshConvertSpeed    = 1,     BlazeQuestSpeed    = 5,
+    ExchangeGemsSpeed  = 10,     GainFireSpeed      = 0.5,   RollAuraSpeed      = 0.5,
+    UpgradeNoobSpeed   = 1,      UpgradeGemsSpeed   = 1,     UpgradePlanksSpeed = 1,
+    UpgradeWaterSpeed  = 1,      UpgradeWCNoobSpeed = 1,     UpgradeGoalsSpeed  = 1,
+    BuyTrophySpeed     = 1,      GoalTreeSpeed      = 1,     WalkDistance       = 5,
+    CapsuleCycleCooldown = 3.1, ScoreGoalSpeed     = 0.01,
+    -- Toggles
+    AutoScoreGoal      = false,  AutoHarvest        = false,  AutoHarvest2       = false,
+    AutoRollTier       = false,
+    AutoHitTree        = false,  AutoWaterPump      = false,  AutoBlazeQuest     = false,
+    AutoConvertWoodToAsh = false, AutoExchangeGems  = false,  AntiAFK            = true,
+    AutoGainFire       = false,  AutoUpgradeNoob    = false,  AutoUpgradeGems    = false,
+    AutoUpgradePlanks  = false,  AutoUpgradeWater   = false,  AutoUpgradeWCNoob  = false,
+    AutoUpgradeGoals   = false,  AutoBuyTrophy      = false,  AutoGoalMultis     = false,
+    AutoGoalSpeed      = false,  AutoHackerPoint    = false,  AutoUnlockNoobs    = false,
+    AutoPrismRuneBulk  = false,  AutoOofMulti       = false,  AutoUnlockSoccerRune = false,
+    AutoUnlockSoccerCapsule = false, AutoUpgradeMoreGoals = false, AutoUpgradeAutoKick = false,
+    AutoUpgradeRuneBulk = false, AutoUpgradeRuneLuck = false, AutoOpenChest = false,
+    AutoRollAura       = false,  AutoOpenCapsule    = false,  AlternateMining    = false,
+    CapsulePauseMining = true,   CapsuleCheckPrism  = true,
+    -- Selections
+    SelectedNoobUpgrades   = {},  SelectedGemUpgrades    = {},  SelectedPlankUpgrades  = {},
+    SelectedWaterUpgrades  = {},  SelectedWCNoobUpgrades = {},  SelectedGoalsUpgrades  = {},
+    SelectedTrophy         = 1,   SelectedGoalMultis     = {},  SelectedUnlockNoobs    = {},
+    AlternateOreSelection  = {},  GemsToExchange         = {},
+    ChestType   = "Chest",       CapsuleType = "Super",
+    UpdateLogShown = false,       LogLevel    = 1,       SmartMiningBackoff = true,
+    IceConvertLevels = {},        MiningRetryDelay = 0.1,
+}
+for k, v in pairs(DEFAULTS) do
+    if CFG[k] == nil then CFG[k] = v end
+end
+
+--[[ -------------------- Constants -------------------- ]]
+
+local ORE_NAMES = {
+    "Stone", "Coal", "Copper", "Iron", "Silver", "Gold", "Platinum",
+    "Titanium", "Uranium", "Cobalt", "Palladium", "Ruby", "Aetherite",
+    "Celestium", "Voidsteel", "Infinity",
+}
+
+local RUNE_NAMES = {
+    "Basic", "Super", "Advanced", "Cosmic Prism", "Hacker", "Snowy", "Deepcore", "Football",
+}
+
+local GEM_NAMES = {
+    "All", "Coal", "Iron", "Sliver", "Gold", "Platinum", "Titanium", "Emerald",
+    "Diamond", "Opal", "Jade", "Amber", "Topaz", "Ruby", "Amethyst", "Quartz",
+    "Sapphire", "Uranium", "Crystal", "Obsidian",
+}
+
+local SPEED_OPTIONS        = {"0.001", "0.01", "0.05", "0.1", "0.2", "0.5", "1", "2", "3", "5", "10"}
+local UPGRADE_SPEED_OPTIONS = {"0.001", "0.01", "0.05", "0.5", "1", "3", "5", "10", "15", "20", "30", "50"}
+
+local CAPSULE_DATA = {
+    Super    = {pos = Vector3.new(615.79, 9.65, 3177.11),      currency = "Prism", cost = 7500000000},
+    Classic  = {pos = Vector3.new(-2585.74, 40.51, -656.99),   currency = "Prism", cost = 1000000000},
+    Football = {pos = Vector3.new(-2600.22, 36.00, -30.61),    currency = "Goals", cost = 2.5e38},  -- 250DD Goals
+}
+
+local TELEPORT_POSITIONS = {
+    Spawn      = CFrame.new(1145.71, 12.47, -596.61),
+    Realm2     = CFrame.new(1019.16, 6.15, 3289.82),
+    HackerLab  = CFrame.new(-2609.42, 40.74, -617.04),
+    MiningCave = CFrame.new(629.28, 9.88, 3195.13),
+    WCEvent    = CFrame.new(-2683.92, 36.52, -62.20),
+}
+
+local KNOWN_CODES = {
+    "10MVISITS!", "HOPERUNESFIXEDONG!", "SORRYWEIRDANDANNOYINGBUGS!!",
+    "9KCCU!!", "8KCCU!!", "BUGFIXANDBALANCEFIX", "LABUPDATE", "7KCCU!!",
+    "5KCCU!!", "6KCCU!!", "13KCCU!!", "14KCCU!!", "15KCCU!!",
+    "35KCOMMUNITYMEMBERS!!", "1KLIKES!!", "BUGFIX3", "BUGFIX1", "BUGFIX2",
+}
+
+-- Key → goal-tree-node mappings for World Cup features
+local GOALS_UPGRADES = {
+    {"AutoUpgradeMoreGoals", "MoreGoals"},
+    {"AutoUpgradeAutoKick",  "AutoKick"},
+    {"AutoUpgradeRuneBulk",  "RuneBulk"},
+    {"AutoUpgradeRuneLuck",  "RuneLuck"},
+}
+local GOAL_SINGLE_FIRES = {
+    {"AutoHackerPoint",         "B3_HackPointMul"},
+    {"AutoPrismRuneBulk",       "PRuneBulk"},
+    {"AutoOofMulti",            "B3_OofMulti"},
+    {"AutoUnlockSoccerRune",    "B3_UnlockSoccerRune"},
+    {"AutoUnlockSoccerCapsule", "UnlockSoccerCapsule"},
+}
+local GOAL_MULTI_MAPPING = {
+    GoalsMulti1 = "GoalsMulti1", GoalsMulti2 = "GoalsMulti2",
+    GoalsMulti3 = "GoalsMulti3", BigGoalMulti = "BigGoalMulti",
+    GoalsMulti4 = "GoalMulti1",  GoalsMulti5 = "GoalMulti2",
+}
+
+--[[ -------------------- Runtime State -------------------- ]]
+
+local miningEnabled     = true
+local isCapsuleActive   = false
+local currentOre        = nil
+local oreWatcher        = nil
+local healthMonitor     = nil
+local miningLock        = false
+local consecutiveOreFails = 0
+
+local activeOres  = {}; for _, n in ipairs(ORE_NAMES)  do activeOres[n]  = false end
+local activeRunes = {}; for _, n in ipairs(RUNE_NAMES) do activeRunes[n] = false end
+
+-- Cached references
+local gameContentCache = nil
+local oresCache        = nil
+local lastCacheRefresh = 0
+local antiAFKConnection = nil
+
+--[[ -------------------- Logging -------------------- ]]
+
+local function logInfo(msg)    if CFG.LogLevel >= 1 then safeWarn("[Sqays Hub] " .. msg) end end
+local function logVerbose(msg) if CFG.LogLevel >= 2 then safeWarn("[Sqays Hub|V] " .. msg) end end
+local function logError(msg)   safeWarn("[Sqays Hub|E] " .. msg) end
+
+--[[ -------------------- Ore / Mining Helpers -------------------- ]]
+
+local function isOreReady(ore)
+    if not (ore and ore.Parent) then return false end
+    if not ore:FindFirstChild("Rock") then return false end
+    local ui = ore:FindFirstChild("OresTopUI")
+    if ui then
+        local bar = ui:FindFirstChild("Bar")
+        if bar then
+            local health = bar:FindFirstChild("Health")
+            if health and health.Text == "Respawning..." then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+local function refreshOreCache()
+    local now = (tryCall(tick) and tick()) or os.clock()
+    if gameContentCache and oresCache and (now - lastCacheRefresh) < 0.25 then
+        return oresCache
+    end
+    lastCacheRefresh = now
+    if not Workspace then return nil end
+    gameContentCache = Workspace:FindFirstChild("__GAME_CONTENT")
+    if gameContentCache then
+        oresCache = gameContentCache:FindFirstChild("Ores")
+    else
+        oresCache = nil
+    end
+    return oresCache
+end
+
+--- Find the highest-tier ready ore matching the selection set.
+local function findBestOre(sel)
+    if not (miningEnabled and not isCapsuleActive) then return nil end
+    local ores = refreshOreCache()
+    if not ores then return nil end
+    for i = #ORE_NAMES, 1, -1 do
+        local name = ORE_NAMES[i]
+        if sel[name] then
+            local direct = ores:FindFirstChild(name)
+            if direct and isOreReady(direct) then return direct end
+            for _, child in ipairs(ores:GetChildren()) do
+                if child.Name == name and isOreReady(child) then
+                    return child
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function harvestFarm()
+    if not Workspace then return end
+    local gc = Workspace:FindFirstChild("__GAME_CONTENT")
+    local farm = gc and gc:FindFirstChild("Farm")
+    if not farm then return end
+    for _, wheat in ipairs(farm:GetChildren()) do
+        local cd = wheat:FindFirstChild("ClickDetector")
+        if cd then fireClickDetector(cd) end
+    end
+end
+
+local function moveToOre(ore)
+    local root = getRoot()
+    if not root then return false end
+    local target = ore:GetPivot().Position + Vector3.new(2, 0, 2)
+    if CFG.AlternateMining then
+        local hum = getHumanoid()
+        if hum and (target - root.Position).Magnitude > CFG.WalkDistance then
+            hum:MoveTo(target)
+        end
+    else
+        root.Position = target
+    end
+    return true
+end
+
+--[[ -------------------- Mining Engine (re-entrancy safe) -------------------- ]]
+
+local function cleanupMiningState()
+    if oreWatcher then
+        tryCall(oreWatcher.Disconnect, oreWatcher)
+        oreWatcher = nil
+    end
+    if healthMonitor and coroutine.status(healthMonitor) ~= "dead" then
+        if hasCoroutineClose then tryCall(coroutine.close, healthMonitor) end
+    end
+    healthMonitor = nil
+    currentOre = nil
+end
+
+local function startMining()
+    if miningLock then return end
+    if not miningEnabled or isCapsuleActive or env.SqaysStop then return end
+
+    miningLock = true
+    cleanupMiningState()
+
+    -- Build selection set
+    local sel = {}
+    if CFG.AlternateMining then
+        for _, n in ipairs(CFG.AlternateOreSelection) do
+            sel[n] = true
+        end
+    else
+        for n, v in pairs(activeOres) do
+            if v then sel[n] = true end
+        end
+    end
+    if not next(sel) then miningLock = false; return end
+
+    -- Find target
+    local ore = findBestOre(sel)
+    if not ore then
+        consecutiveOreFails = consecutiveOreFails + 1
+        miningLock = false
+        return
+    end
+
+    consecutiveOreFails = 0
+    currentOre = ore
+    moveToOre(ore)
+
+    -- Watch for ore destruction
+    oreWatcher = ore.AncestryChanged:Connect(function(_, parent)
+        if parent and ore:FindFirstChild("Rock") then return end
+        currentOre = nil
+        if oreWatcher then
+            tryCall(oreWatcher.Disconnect, oreWatcher)
+            oreWatcher = nil
+        end
+        threadWait(CFG.MiningSpeed > 0 and CFG.MiningSpeed or 0.001)
+        startMining()
+    end)
+
+    -- Health monitor (polled check for respawning ore)
+    healthMonitor = coroutine.create(function()
+        while currentOre == ore and miningEnabled and not isCapsuleActive and not env.SqaysStop do
+            if not isOreReady(ore) then
+                currentOre = nil
+                if oreWatcher then
+                    tryCall(oreWatcher.Disconnect, oreWatcher)
+                    oreWatcher = nil
+                end
+                healthMonitor = nil
+                startMining()
+                return
+            end
+            threadWait(0.05)
+        end
+    end)
+    trackThread(healthMonitor)
+    tryCall(coroutine.resume, healthMonitor)
+
+    miningLock = false
+end
+
+-- Background scanner: picks up mining when no ore is active
+spawnThread(function()
+    while not env.SqaysStop do
+        threadWait(0.5)
+        if miningEnabled and not isCapsuleActive and not currentOre and not miningLock then
+            startMining()
+        end
+    end
+end)
+
+-- Character respawn handler: restart mining if character resets
+spawnThread(function()
+    local lastChar = Player.Character
+    while not env.SqaysStop do
+        threadWait(1)
+        local char = Player.Character
+        if char ~= lastChar then
+            lastChar = char
+            if char then
+                logVerbose("Character respawned — restarting mining")
+                cleanupMiningState()
+                startMining()
+            end
+        end
+    end
+end)
+
+--[[ -------------------- Anti-AFK -------------------- ]]
+
+local function setAntiAFK(on)
+    CFG.AntiAFK = on
+    if antiAFKConnection then
+        tryCall(antiAFKConnection.Disconnect, antiAFKConnection)
+        antiAFKConnection = nil
+    end
+    if not (on and Player) then return end
+    local saves = 0
+    antiAFKConnection = Player.Idled:Connect(function()
+        tryCall(function()
+            if VirtualUser then
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+            end
+        end)
+        saves = saves + 1
+        logInfo("Anti-AFK #" .. saves)
+    end)
+end
+setAntiAFK(CFG.AntiAFK)
+
+--[[ -------------------- Automation Loop Factory -------------------- ]]
+
+--- Create a generic tick loop: while running, if CFG[flag] then action() with delay.
+local function createLoop(flag, speedKey, action)
+    spawnThread(function()
+        while not env.SqaysStop do
+            if CFG[flag] then
+                tryCall(action)
+                threadWait(CFG[speedKey])
+            else
+                threadWait(0.1)
+            end
+        end
+    end)
+end
+
+--- Create a multi-target upgrade loop with pre-built arg dispatch.
+local function createUpgradeLoop(flag, speedKey, selKey, baseArgs)
+    local argc = #baseArgs
+    spawnThread(function()
+        while not env.SqaysStop do
+            if CFG[flag] and #CFG[selKey] > 0 then
+                for _, target in ipairs(CFG[selKey]) do
+                    if env.SqaysStop then break end
+                    -- Inline dispatch (no table allocation on hot path)
+                    if argc == 1 then
+                        fireRemote(baseArgs[1], target)
+                    elseif argc == 2 then
+                        fireRemote(baseArgs[1], baseArgs[2], target)
+                    elseif argc == 3 then
+                        fireRemote(baseArgs[1], baseArgs[2], baseArgs[3], target)
+                    else
+                        fireRemote(table.unpack(baseArgs), target)
+                    end
+                end
+                threadWait(CFG[speedKey])
+            else
+                threadWait(0.1)
+            end
+        end
+    end)
+end
+
+--[[ -------------------- Instantiate All Automation Loops -------------------- ]]
+
+-- Simple remote loops
+createLoop("AutoGainFire",       "GainFireSpeed",    function() fireRemote("GainFire") end)
+createLoop("AutoHarvest",        "HarvestSpeed",     harvestFarm)
+createLoop("AutoWaterPump",      "WaterPumpSpeed",   function() fireRemote("GainWater") end)
+createLoop("AutoConvertWoodToAsh","AshConvertSpeed", function() fireRemote("ConvertWoodToAsh") end)
+createLoop("AutoRollAura",       "RollAuraSpeed",    function() fireRemote("RollAura") end)
+createLoop("AutoBlazeQuest",     "BlazeQuestSpeed",  function()
+    fireRemote("SetUpgradeAutomationPaused", "Fire", false)
+    fireRemote("Blaze")
+end)
+
+-- Harvest 2 (tagged wheat slots)
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoHarvest2 and CollectionService then
+            for _, slot in ipairs(CollectionService:GetTagged("WheatSlot")) do
+                local cd = slot:FindFirstChildOfClass("ClickDetector")
+                if cd and slot:FindFirstChild("5") then
+                    fireClickDetector(cd)
+                    threadWait(0.01)
+                end
+            end
+        end
+        threadWait(0.1)
+    end
+end)
+
+-- Chest
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoOpenChest then
+            fireRemote("OpenChest", CFG.ChestType)
+            threadWait(0.5)
+        else
+            threadWait(0.1)
+        end
+    end
+end)
+
+-- Tier
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoRollTier then fireRemote("RollTier") end
+        threadWait(CFG.TierSpeed)
+    end
+end)
+
+-- Runes
+spawnThread(function()
+    while not env.SqaysStop do
+        for _, name in ipairs(RUNE_NAMES) do
+            if activeRunes[name] then fireRemote("RollRune", name) end
+        end
+        threadWait(CFG.RuneSpeed)
+    end
+end)
+
+-- Tree
+createLoop("AutoHitTree", "TreeSpeed", function()
+    local f = Player and Player:FindFirstChild("FEATURES")
+    local t = f and f:FindFirstChild("TREE")
+    local s = t and t:FindFirstChild("IsSpawned")
+    if s and s.Value then fireRemote("HitTree") end
+end)
+
+-- Gem exchange
+createLoop("AutoExchangeGems", "ExchangeGemsSpeed", function()
+    local gems = CFG.GemsToExchange
+    if #gems == 0 then return end
+    for _, gem in ipairs(gems) do
+        if env.SqaysStop then break end
+        if gem == "All" then fireRemote("ExchangeAllMinerals"); break end
+        if getCurrency(gem) > 0 then fireRemote("ExchangeMineral", gem) end
+    end
+end)
+
+-- Upgrade loops
+createUpgradeLoop("AutoUpgradeNoob",   "UpgradeNoobSpeed",   "SelectedNoobUpgrades",    {"UpgradeNoobMax"})
+createUpgradeLoop("AutoUpgradeGems",   "UpgradeGemsSpeed",   "SelectedGemUpgrades",     {"UpgradeUpgrade", "Gem"})
+createUpgradeLoop("AutoUpgradePlanks", "UpgradePlanksSpeed", "SelectedPlankUpgrades",   {"UpgradeUpgrade", "Planks"})
+createUpgradeLoop("AutoUpgradeWater",  "UpgradeWaterSpeed",  "SelectedWaterUpgrades",   {"UpgradeUpgrade", "Water"})
+createUpgradeLoop("AutoUpgradeWCNoob", "UpgradeWCNoobSpeed", "SelectedWCNoobUpgrades", {"UpgradeNoobMax"})
+
+-- Goals upgrades (consolidated)
+spawnThread(function()
+    while not env.SqaysStop do
+        local fired = false
+        for _, entry in ipairs(GOALS_UPGRADES) do
+            if env.SqaysStop then break end
+            if CFG[entry[1]] then
+                fireRemote("UpgradeUpgradeMax", "Goals", entry[2])
+                fired = true
+            end
+        end
+        threadWait(fired and CFG.UpgradeGoalsSpeed or 0.1)
+    end
+end)
+
+-- Auto Score Goal (bursts remote as fast as config allows)
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoScoreGoal then
+            fireRemote("ScoreGoal")
+            threadWait(CFG.ScoreGoalSpeed)
+        else
+            threadWait(0.1)
+        end
+    end
+end)
+
+-- Buy Trophy
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoBuyTrophy then
+            fireRemote("BuyTrophy", CFG.SelectedTrophy)
+            threadWait(CFG.BuyTrophySpeed)
+        else
+            threadWait(0.1)
+        end
+    end
+end)
+
+-- Goal Multis (multi-select iteration)
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoGoalMultis then
+            for _, multi in ipairs(CFG.SelectedGoalMultis) do
+                if env.SqaysStop then break end
+                fireRemote("BuyFootballUITreeNode", GOAL_MULTI_MAPPING[multi] or multi)
+                threadWait(0.1)
+            end
+            threadWait(CFG.GoalTreeSpeed)
+        else
+            threadWait(0.1)
+        end
+    end
+end)
+
+-- Goal Speed (single toggle)
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoGoalSpeed then
+            fireRemote("BuyFootballUITreeNode", "GoalsSpeed")
+            threadWait(CFG.GoalTreeSpeed)
+        else
+            threadWait(0.1)
+        end
+    end
+end)
+
+-- Unlock Noobs (multi-select iteration)
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoUnlockNoobs then
+            for _, unlock in ipairs(CFG.SelectedUnlockNoobs) do
+                if env.SqaysStop then break end
+                fireRemote("BuyFootballUITreeNode", unlock)
+                threadWait(0.1)
+            end
+            threadWait(CFG.GoalTreeSpeed)
+        else
+            threadWait(0.1)
+        end
+    end
+end)
+
+-- Goal single-fires (consolidated 5 → 1 loop)
+spawnThread(function()
+    while not env.SqaysStop do
+        local fired = false
+        for _, entry in ipairs(GOAL_SINGLE_FIRES) do
+            if env.SqaysStop then break end
+            if CFG[entry[1]] then
+                fireRemote("BuyFootballUITreeNode", entry[2])
+                fired = true
+            end
+        end
+        threadWait(fired and CFG.GoalTreeSpeed or 0.1)
+    end
+end)
+
+-- Ice Convert
+spawnThread(function()
+    while not env.SqaysStop do
+        for level = 1, 12 do
+            if CFG.IceConvertLevels[level] then
+                fireRemote("PressButton", level)
+            end
+        end
+        threadWait(CFG.IceConvertSpeed)
+    end
+end)
+
+--[[ -------------------- Capsule Opener -------------------- ]]
+
+--- Teleport to `target` CFrame with retries, return true on success.
+local function forceTeleport(target)
+    local char = Player and Player.Character
+    local root = getRoot()
+    if not (char and root) then return false end
+
+    for attempt = 1, 8 do
+        tryCall(function() char:PivotTo(target) end)
+        threadWait(0.15 + attempt * 0.05)
+        if (root.Position - target.Position).Magnitude < 15 then return true end
+        if attempt >= 4 then
+            tryCall(function() root.CFrame = target end)
+            threadWait(0.3)
+        end
+    end
+    tryCall(function() root.CFrame = target end) -- final fallback
+    threadWait(0.5)
+    return (root.Position - target.Position).Magnitude < 15
+end
+
+local function openCapsule()
+    if isCapsuleActive or env.SqaysStop then return false end
+
+    local char = Player and Player.Character
+    local root = getRoot()
+    if not (char and root) then
+        logVerbose("Capsule: No character")
+        return false
+    end
+
+    local ct   = CFG.CapsuleType
+    local data = CAPSULE_DATA[ct]
+    if not data then return false end
+
+    if CFG.CapsuleCheckPrism and getCurrency(data.currency) < data.cost then
+        logInfo("Not enough " .. data.currency .. " for " .. ct .. " capsule (" .. tostring(data.cost) .. " needed)")
+        return false
+    end
+
+    isCapsuleActive = true
+    local prevMining = miningEnabled
+    if CFG.CapsulePauseMining then
+        miningEnabled = false
+        cleanupMiningState()
+    end
+
+    local savedCFrame = root.CFrame
+
+    -- Go to capsule zone
+    forceTeleport(CFrame.new(data.pos))
+
+    -- Attempt to open
+    local cur = data.currency
+    local before = getCurrency(cur)
+    local remote = getRemote()
+    local opened = false
+
+    if remote then
+        for i = 1, 20 do
+            tryCall(function() remote:FireServer("OpenCapsule", ct) end)
+            threadWait(0.1 + i * 0.05)
+            if getCurrency(cur) < before then
+                opened = true
+                break
+            end
+        end
+    else
+        logError("Capsule: Remote not found")
+    end
+
+    if not opened then
+        logError("Capsule: Failed to open after 20 attempts")
+    end
+
+    -- Return to original position
+    forceTeleport(savedCFrame)
+
+    isCapsuleActive = false
+    miningEnabled = prevMining
+    startMining()
+    return opened
+end
+
+spawnThread(function()
+    while not env.SqaysStop do
+        if CFG.AutoOpenCapsule then
+            openCapsule()
+            threadWait(CFG.CapsuleCycleCooldown)
+        else
+            threadWait(1)
+        end
+    end
+end)
+
+--[[ -------------------- Preset System -------------------- ]]
+
+local PRESET_FILE = "SqaysPreset_" .. Player.UserId .. ".json"
+local savedPreset = nil
+
+do
+    local raw = readFileSafe(PRESET_FILE)
+    if raw and HttpService then
+        local ok, data = tryCall(function() return HttpService:JSONDecode(raw) end)
+        if ok and type(data) == "table" then
+            savedPreset = data
+        end
+    end
+end
+
+local SNAPSHOT_KEYS = {
+    "AutoHarvest","AutoHarvest2","AutoRollTier","AutoHitTree",
+    "AutoWaterPump","AutoBlazeQuest","AutoConvertWoodToAsh","AutoExchangeGems",
+    "AntiAFK","AutoGainFire","AutoUpgradeNoob","AutoUpgradeGems",
+    "AutoUpgradePlanks","AutoUpgradeWater","AutoUpgradeWCNoob","AutoUpgradeGoals","AutoBuyTrophy",
+    "AutoGoalMultis","AutoGoalSpeed","AutoHackerPoint","AutoUnlockNoobs",
+    "AutoPrismRuneBulk","AutoOofMulti","AutoUnlockSoccerRune","AutoUnlockSoccerCapsule",
+    "AutoUpgradeMoreGoals","AutoUpgradeAutoKick","AutoUpgradeRuneBulk","AutoUpgradeRuneLuck",
+    "AutoOpenChest","AutoRollAura","AutoOpenCapsule","AlternateMining",
+    "CapsulePauseMining","CapsuleCheckPrism",
+    "SelectedNoobUpgrades","SelectedGemUpgrades","SelectedPlankUpgrades",
+    "SelectedWaterUpgrades","SelectedWCNoobUpgrades","SelectedGoalsUpgrades","SelectedTrophy",
+    "SelectedGoalMultis","SelectedUnlockNoobs","AlternateOreSelection","GemsToExchange",
+    "ChestType","CapsuleType",
+    "MiningSpeed","HarvestSpeed","TierSpeed","RuneSpeed","TreeSpeed",
+    "WaterPumpSpeed","IceConvertSpeed","AshConvertSpeed","BlazeQuestSpeed",
+    "ExchangeGemsSpeed","GainFireSpeed","RollAuraSpeed",
+    "UpgradeNoobSpeed","UpgradeGemsSpeed","UpgradePlanksSpeed","UpgradeWaterSpeed","UpgradeWCNoobSpeed",
+    "UpgradeGoalsSpeed","BuyTrophySpeed","GoalTreeSpeed",
+    "WalkDistance","CapsuleCycleCooldown","ScoreGoalSpeed",
+    "AutoScoreGoal",
+    "IceConvertLevels",
+}
+
+local function createSnapshot()
+    local s = {}
+    for _, k in ipairs(SNAPSHOT_KEYS) do
+        local v = CFG[k]
+        if type(v) == "table" then
+            local c, n = {}, 0
+            for i, x in ipairs(v) do n = n + 1; c[n] = x end
+            s[k] = c
+        else
+            s[k] = v
+        end
+    end
+    -- Active state
+    s._activeOres, s._activeRunes = {}, {}
+    for n, v in pairs(activeOres)  do if v then s._activeOres[n]  = true end end
+    for n, v in pairs(activeRunes) do if v then s._activeRunes[n] = true end end
+    return s
+end
+
+local function applySnapshot(s)
+    if not s then return end
+    for _, k in ipairs(SNAPSHOT_KEYS) do
+        if s[k] ~= nil then CFG[k] = s[k] end
+    end
+    if s._activeOres then
+        for n in pairs(activeOres) do activeOres[n] = false end
+        for n in pairs(s._activeOres) do activeOres[n] = true end
+    end
+    if s._activeRunes then
+        for n in pairs(activeRunes) do activeRunes[n] = false end
+        for n in pairs(s._activeRunes) do activeRunes[n] = true end
+    end
+    setAntiAFK(CFG.AntiAFK)
+    if miningEnabled and not isCapsuleActive then
+        cleanupMiningState()
+        startMining()
+    end
+end
+
+local function savePreset()
+    savedPreset = createSnapshot()
+    if HttpService then
+        writeFileSafe(PRESET_FILE, HttpService:JSONEncode(savedPreset))
+    end
+end
+
+local function loadPreset()
+    if savedPreset then applySnapshot(savedPreset); return true end
+    return false
+end
+
+local function deletePreset()
+    savedPreset = nil
+    deleteFileSafe(PRESET_FILE)
+end
+
+-- Auto-load
+if savedPreset then applySnapshot(savedPreset) end
+
+--[[ -------------------- Rayfield UI Library Loading -------------------- ]]
+
+local rayfieldSource = nil
+tryCall(function()
+    rayfieldSource = rawget(_G, "rayfieldSource") or rawget(env, "rayfieldSource")
+end)
+
+if not rayfieldSource then
+    logInfo("Downloading Rayfield UI library…")
+    local urls = {
+        "https://sirius.menu/rayfield",
+        "https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua",
+    }
+    for _, url in ipairs(urls) do
+        for _ = 1, 3 do
+            local body = httpGet(url)
+            if body and #body > 1000 then rayfieldSource = body; break end
+            threadWait(1)
+        end
+        if rayfieldSource then break end
+    end
+
+    if rayfieldSource then
+        tryCall(function() rawset(_G, "rayfieldSource", rayfieldSource) end)
+    else
+        logError("Rayfield download failed. Running headless — toggle via presets.")
+        safeWarn("[Sqays Hub] v4.3 headless — ready.")
+        return
+    end
+end
+
+local loader = loadstring or load
+if type(loader) ~= "function" then
+    logError("Executor does not support loadstring/load. Running headless.")
+    safeWarn("[Sqays Hub] v4.3 headless — ready.")
+    return
+end
+
+local ok, rayfieldFn = tryCall(function() return loader(rayfieldSource) end)
+if not (ok and type(rayfieldFn) == "function") then
+    logError("Rayfield source corrupted. Running headless.")
+    safeWarn("[Sqays Hub] v4.3 headless — ready.")
+    return
+end
+
+local RF = rayfieldFn()
+if not (RF and type(RF.CreateWindow) == "function") then
+    logError("Rayfield init failed. Running headless.")
+    safeWarn("[Sqays Hub] v4.3 headless — ready.")
+    return
+end
+
+--[[ -------------------- UI Construction -------------------- ]]
+
+local Window = RF:CreateWindow({
+    Name         = "Sqays Hub — Noob Incremental",
+    LoadingTitle = "Sqays Hub v4.3",
+    ConfigurationSaving = {Enabled = false},
+})
+
+-- ---- UI helpers ----
+local function addToggle(tab, label, key, cb)
+    tab:CreateToggle({
+        Name         = label,
+        CurrentValue = CFG[key],
+        Callback     = function(v) CFG[key] = v; if cb then cb(v) end end,
+    })
+end
+
+local function addSpeed(tab, label, key)
+    tab:CreateDropdown({
+        Name          = label,
+        Options       = SPEED_OPTIONS,
+        CurrentOption = {tostring(CFG[key])},
+        Callback      = function(o) CFG[key] = tonumber(o[1]) end,
+    })
+end
+
+local function addMulti(tab, label, key, opts)
+    tab:CreateDropdown({
+        Name           = label,
+        Options        = opts,
+        MultipleOptions = true,
+        CurrentOption  = CFG[key] or {},
+        Callback       = function(o) CFG[key] = o end,
+    })
+end
+
+local function addSingle(tab, label, key, opts)
+    tab:CreateDropdown({
+        Name          = label,
+        Options       = opts,
+        CurrentOption = {CFG[key]},
+        Callback      = function(o) CFG[key] = o[1] end,
+    })
+end
+
+local tabs = {
+    mining   = Window:CreateTab("Mining"),
+    auto     = Window:CreateTab("Automation"),
+    ice      = Window:CreateTab("Ice & Ash"),
+    upg      = Window:CreateTab("Upgrades"),
+    worldcup = Window:CreateTab("World Cup"),
+    capsules = Window:CreateTab("Capsules"),
+    speed    = Window:CreateTab("Speed"),
+    misc     = Window:CreateTab("Misc"),
+    presets  = Window:CreateTab("Presets"),
+}
+
+-- ======= Mining Tab =======
+tabs.mining:CreateSection("Teleport Mining")
+tabs.mining:CreateToggle({
+    Name = "Mine All Ores", CurrentValue = false,
+    Callback = function(v)
+        for _, n in ipairs(ORE_NAMES) do activeOres[n] = v end
+        startMining()
+    end,
+})
+-- Closure-safe: capture ore name in a do-block per iteration
+for _, oreName in ipairs(ORE_NAMES) do
+    local name = oreName  -- safe capture for Lua 5.1 executors
+    tabs.mining:CreateToggle({
+        Name = "Mine " .. name, CurrentValue = activeOres[name],
+        Callback = function(v) activeOres[name] = v; startMining() end,
+    })
+end
+
+tabs.mining:CreateSection("Walk Mining")
+addToggle(tabs.mining, "Enable Walk Mining", "AlternateMining", startMining)
+tabs.mining:CreateSlider({
+    Name = "Walk Distance", Range = {1, 50}, Increment = 1,
+    CurrentValue = CFG.WalkDistance,
+    Callback = function(v) CFG.WalkDistance = v end,
+})
+
+tabs.mining:CreateSection("Walk Ore Selection")
+for _, oreName in ipairs(ORE_NAMES) do
+    local name = oreName
+    tabs.mining:CreateToggle({
+        Name = "Walk " .. name,
+        CurrentValue = (table.find(CFG.AlternateOreSelection, name) ~= nil),
+        Callback = function(v)
+            local sel = CFG.AlternateOreSelection
+            local idx = table.find(sel, name)
+            if v and not idx then
+                table.insert(sel, name)
+            elseif not v and idx then
+                table.remove(sel, idx)
+            end
+            startMining()
+        end,
+    })
+end
+
+-- ======= Automation Tab =======
+tabs.auto:CreateSection("Harvest & Fire")
+addToggle(tabs.auto, "Auto Harvest", "AutoHarvest")
+addToggle(tabs.auto, "Auto Harvest 2 (Tagged)", "AutoHarvest2")
+addToggle(tabs.auto, "Auto Gain Fire", "AutoGainFire")
+addToggle(tabs.auto, "Auto Blaze Quest", "AutoBlazeQuest")
+
+tabs.auto:CreateSection("Roll & Tree")
+addToggle(tabs.auto, "Auto Roll Tier", "AutoRollTier")
+addToggle(tabs.auto, "Auto Hit Tree", "AutoHitTree")
+addToggle(tabs.auto, "Auto Water Pump", "AutoWaterPump")
+addToggle(tabs.auto, "Auto Roll Aura", "AutoRollAura")
+tabs.auto:CreateSlider({
+    Name = "Roll Aura Speed (s)", Range = {0.01, 10}, Increment = 0.01,
+    CurrentValue = CFG.RollAuraSpeed,
+    Callback = function(v) CFG.RollAuraSpeed = v end,
+})
+
+tabs.auto:CreateSection("Runes")
+for _, runeName in ipairs(RUNE_NAMES) do
+    local name = runeName
+    tabs.auto:CreateToggle({
+        Name = "Roll " .. name, CurrentValue = activeRunes[name],
+        Callback = function(v) activeRunes[name] = v end,
+    })
+end
+
+tabs.auto:CreateSection("Chest")
+addToggle(tabs.auto, "Auto Open Chest", "AutoOpenChest")
+addSingle(tabs.auto, "Chest Type", "ChestType", {"Chest", "GoldenChest"})
+
+tabs.auto:CreateSection("Exchange Gems")
+addToggle(tabs.auto, "Auto Exchange Gems", "AutoExchangeGems")
+addMulti(tabs.auto, "Gems to Exchange", "GemsToExchange", GEM_NAMES)
+
+-- ======= Ice & Ash Tab =======
+tabs.ice:CreateSection("Ice Convert Levels")
+for i = 1, 12 do
+    local level = i
+    tabs.ice:CreateToggle({
+        Name = "Convert Level " .. level,
+        CurrentValue = (CFG.IceConvertLevels[level] == true),
+        Callback = function(v) CFG.IceConvertLevels[level] = v end,
+    })
+end
+tabs.ice:CreateSection("Ash Convert")
+addToggle(tabs.ice, "Auto Convert Wood to Ash", "AutoConvertWoodToAsh")
+
+-- ======= Upgrades Tab =======
+local function upgSec(label, flag, selKey, speedKey, opts)
+    tabs.upg:CreateSection(label)
+    addToggle(tabs.upg, "Auto Upgrade " .. label, flag)
+    addMulti(tabs.upg, "Select " .. label, selKey, opts)
+    tabs.upg:CreateDropdown({
+        Name = "Speed (s)", Options = UPGRADE_SPEED_OPTIONS,
+        CurrentOption = {tostring(CFG[speedKey])},
+        Callback = function(o) CFG[speedKey] = tonumber(o[1]) end,
+    })
+end
+upgSec("Noobs",  "AutoUpgradeNoob",  "SelectedNoobUpgrades",  "UpgradeNoobSpeed",  {"Fisherman","Knight","Explorer","Magician"})
+upgSec("Gems",   "AutoUpgradeGems",  "SelectedGemUpgrades",   "UpgradeGemsSpeed",   {"MoreGems","MoreOreStats","MoreOof"})
+upgSec("Planks", "AutoUpgradePlanks","SelectedPlankUpgrades", "UpgradePlanksSpeed", {"WaterFromPlanks","MorePlanks"})
+upgSec("Water",  "AutoUpgradeWater", "SelectedWaterUpgrades", "UpgradeWaterSpeed",  {"MoreGems","MorePlanks"})
+
+-- ======= World Cup Tab =======
+tabs.worldcup:CreateSection("Goals Upgrades")
+addToggle(tabs.worldcup, "Auto Upgrade MoreGoals", "AutoUpgradeMoreGoals")
+addToggle(tabs.worldcup, "Auto Upgrade AutoKick",  "AutoUpgradeAutoKick")
+addToggle(tabs.worldcup, "Auto Upgrade RuneBulk",  "AutoUpgradeRuneBulk")
+addToggle(tabs.worldcup, "Auto Upgrade RuneLuck",  "AutoUpgradeRuneLuck")
+tabs.worldcup:CreateDropdown({
+    Name = "Speed (s)", Options = UPGRADE_SPEED_OPTIONS,
+    CurrentOption = {tostring(CFG.UpgradeGoalsSpeed)},
+    Callback = function(o) CFG.UpgradeGoalsSpeed = tonumber(o[1]) end,
+})
+
+tabs.worldcup:CreateSection("WC Noob Upgrades")
+addToggle(tabs.worldcup, "Auto Upgrade WC Noob", "AutoUpgradeWCNoob")
+addMulti(tabs.worldcup, "Select WC Noob Upgrades", "SelectedWCNoobUpgrades",
+    {"Goalkeeper","RightBack","RightCenterBack","LeftCenterBack","LeftBack",
+     "RightDefensiveMid Noob","LeftDefensiveMid Noob","RightWing Noob","AttackingMid Noob"})
+tabs.worldcup:CreateDropdown({
+    Name = "Speed (s)", Options = UPGRADE_SPEED_OPTIONS,
+    CurrentOption = {tostring(CFG.UpgradeWCNoobSpeed)},
+    Callback = function(o) CFG.UpgradeWCNoobSpeed = tonumber(o[1]) end,
+})
+
+tabs.worldcup:CreateSection("Auto Score Goal")
+addToggle(tabs.worldcup, "Auto Score Goal (Fast)", "AutoScoreGoal")
+tabs.worldcup:CreateDropdown({
+    Name = "Score Speed (s)", Options = SPEED_OPTIONS,
+    CurrentOption = {tostring(CFG.ScoreGoalSpeed)},
+    Callback = function(o) CFG.ScoreGoalSpeed = tonumber(o[1]) end,
+})
+
+tabs.worldcup:CreateSection("Buy Trophy")
+addToggle(tabs.worldcup, "Auto Buy Trophy", "AutoBuyTrophy")
+addSingle(tabs.worldcup, "Select Trophy", "SelectedTrophy", {"1","2","3","4","5","6","7","8","9","10"})
+tabs.worldcup:CreateDropdown({
+    Name = "Speed (s)", Options = UPGRADE_SPEED_OPTIONS,
+    CurrentOption = {tostring(CFG.BuyTrophySpeed)},
+    Callback = function(o) CFG.BuyTrophySpeed = tonumber(o[1]) end,
+})
+
+tabs.worldcup:CreateSection("Goal Tree")
+addToggle(tabs.worldcup, "Auto Goal Multis", "AutoGoalMultis")
+addMulti(tabs.worldcup, "Select Goal Multis", "SelectedGoalMultis",
+    {"GoalsMulti1","GoalsMulti2","GoalsMulti3","BigGoalMulti","GoalsMulti4","GoalsMulti5"})
+addToggle(tabs.worldcup, "Auto Goal Speed", "AutoGoalSpeed")
+addToggle(tabs.worldcup, "Auto Hacker Point", "AutoHackerPoint")
+addToggle(tabs.worldcup, "Auto Unlock Noobs", "AutoUnlockNoobs")
+addMulti(tabs.worldcup, "Select Unlock Noobs", "SelectedUnlockNoobs", {"UnlockNoob2","UnlockNoob3"})
+addToggle(tabs.worldcup, "Auto Prism Rune Bulk", "AutoPrismRuneBulk")
+addToggle(tabs.worldcup, "Auto Oof Multi", "AutoOofMulti")
+addToggle(tabs.worldcup, "Auto Unlock Soccer Rune", "AutoUnlockSoccerRune")
+addToggle(tabs.worldcup, "Auto Unlock Soccer Capsule", "AutoUnlockSoccerCapsule")
+tabs.worldcup:CreateDropdown({
+    Name = "Speed (s)", Options = UPGRADE_SPEED_OPTIONS,
+    CurrentOption = {tostring(CFG.GoalTreeSpeed)},
+    Callback = function(o) CFG.GoalTreeSpeed = tonumber(o[1]) end,
+})
+
+-- ======= Capsules Tab =======
+tabs.capsules:CreateSection("Auto Open")
+addToggle(tabs.capsules, "Enable Auto Open Capsule", "AutoOpenCapsule")
+addSingle(tabs.capsules, "Capsule Type", "CapsuleType", {"Super", "Classic", "Football"})
+tabs.capsules:CreateSection("Options")
+addToggle(tabs.capsules, "Pause Mining During Open", "CapsulePauseMining")
+addToggle(tabs.capsules, "Check Prism Balance", "CapsuleCheckPrism")
+tabs.capsules:CreateSlider({
+    Name = "Cycle Cooldown (s)", Range = {3, 10}, Increment = 0.1,
+    CurrentValue = CFG.CapsuleCycleCooldown,
+    Callback = function(v) CFG.CapsuleCycleCooldown = v end,
+})
+
+-- ======= Speed Tab =======
+tabs.speed:CreateSection("Main Speeds")
+addSpeed(tabs.speed, "Mining Speed",         "MiningSpeed")
+addSpeed(tabs.speed, "Tier Roll Speed",       "TierSpeed")
+addSpeed(tabs.speed, "Rune Roll Speed",       "RuneSpeed")
+addSpeed(tabs.speed, "Water Pump Speed",      "WaterPumpSpeed")
+addSpeed(tabs.speed, "Ice Convert Speed",     "IceConvertSpeed")
+addSpeed(tabs.speed, "Ash Convert Speed",     "AshConvertSpeed")
+
+tabs.speed:CreateSection("Extra Speeds")
+addSpeed(tabs.speed, "Harvest Speed",         "HarvestSpeed")
+addSpeed(tabs.speed, "Tree Speed",            "TreeSpeed")
+addSpeed(tabs.speed, "Blaze Quest Speed",     "BlazeQuestSpeed")
+addSpeed(tabs.speed, "Exchange Gems Speed",   "ExchangeGemsSpeed")
+addSpeed(tabs.speed, "Gain Fire Speed",       "GainFireSpeed")
+
+-- ======= Misc Tab =======
+tabs.misc:CreateSection("Anti AFK")
+addToggle(tabs.misc, "Anti AFK", "AntiAFK", setAntiAFK)
+
+tabs.misc:CreateSection("Teleport")
+for label, cf in pairs(TELEPORT_POSITIONS) do
+    local target = cf  -- closure safety
+    tabs.misc:CreateButton({
+        Name = "Teleport to " .. label,
+        Callback = function()
+            local root = getRoot()
+            if root then root.CFrame = target end
+        end,
+    })
+end
+
+tabs.misc:CreateSection("Codes")
+tabs.misc:CreateButton({
+    Name = "Redeem All Codes",
+    Callback = function()
+        spawnThread(function()
+            local cnt = 0
+            for _, code in ipairs(KNOWN_CODES) do
+                i... (6 KB kaldı)
