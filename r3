@@ -1,7 +1,15 @@
--- Sqays Hub - Auto Mine + Auto Trial (Düzeltilmiş)
-local env = getgenv and getgenv() or _G
+-- Sqays Hub - Auto Mine + Auto Trial (Hata düzeltildi, trial iyileştirildi)
+-- Line 2 düzeltildi: getgenv hatasına karşı korumalı
+local env = _G
+pcall(function()
+    if getgenv and type(getgenv) == "function" then
+        env = getgenv()
+    end
+end)
+
 if env.NILoaded then return end
-env.NILoaded = true; env.NIStop = false
+env.NILoaded = true
+env.NIStop = false
 
 -- ===== EXECUTOR DETECTION =====
 local execName = "Unknown"
@@ -61,7 +69,6 @@ end)
 pcall(function()
     if getconnections then for _, c in ipairs(getconnections(game:GetService("ScriptContext").Error)) do c:Disable() end end
 end)
--- Silence MineralGained events (prevents queue exhaustion)
 pcall(function()
     local net = game:GetService("ReplicatedStorage"):FindFirstChild("__Net")
     if net then
@@ -79,7 +86,6 @@ local VU = game:GetService("VirtualUser")
 local LP = P.LocalPlayer
 
 -- ===== ACTIVE USER HEARTBEAT =====
--- Anonymous ping every 30s — random session ID used only for counting, no personal data
 local HEARTBEAT_WEBHOOK = "https://discord.com/api/webhooks/1524413636880105603/Y0Ow9lIxaQvCykXB4YAz2qWhjTvzGgCvHIcxsGBEthnCfdiuNv9XBrh5K10Lt6ceHjb5"
 local sessionId = tostring(math.random(100000000, 999999999))
 
@@ -96,7 +102,6 @@ local function sendHeartbeat()
     end)
 end
 
--- Start heartbeat loop (30s interval)
 task.spawn(function()
     while true do
         sendHeartbeat()
@@ -128,7 +133,7 @@ local ORES = {"Stone","Coal","Copper","Iron","Silver","Gold","Platinum","Titaniu
 local S = {
     running = false,
     noclip = false,
-    tweenSpeed = 0.6, -- Glide speed (s → lower = faster)
+    tweenSpeed = 0.6,
 }
 
 -- ===== AUTOMATION STATE =====
@@ -142,7 +147,6 @@ local A = {
 }
 
 -- ===== TRIAL STATE =====
--- GÜNCELLENMİŞ: Trial odalarına giriş koordinatları
 local TRIAL_COORDS = {
     Easy = Vector3.new(853.2357788085938, 11.014291763305664, 13443.501953125),
     Medium = Vector3.new(878.9148559570312, 11.030077934265137, 13419.0625),
@@ -154,8 +158,8 @@ local T = {
     difficulty = "Easy",
     grinding = false,
     schedulerRunning = false,
-    lastJoinMinute = -1, -- Tekrar joinlemeyi engellemek için
-    lastGrindMinute = -1  -- Tekrar grind başlatmayı engellemek için
+    lastJoinMinute = -1,
+    lastGrindMinute = -1
 }
 
 -- ===== NO CLIP =====
@@ -207,9 +211,9 @@ antiAFK(true)
 -- ===== MOVEMENT =====
 local activeTween = nil
 
-local function isCloseEnough(hrp, orePos, threshold)
+local function isCloseEnough(hrp, pos, threshold)
     if not hrp then return false end
-    local d = Vector3.new(orePos.X - hrp.Position.X, 0, orePos.Z - hrp.Position.Z)
+    local d = Vector3.new(pos.X - hrp.Position.X, 0, pos.Z - hrp.Position.Z)
     return d.Magnitude <= threshold
 end
 
@@ -219,14 +223,11 @@ local function tweenTo(pos)
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp then return end
-
     if isCloseEnough(hrp, pos, 3) then return end
-
     if activeTween then
         pcall(function() activeTween:Cancel() end)
         activeTween = nil
     end
-
     local target = CFrame.new(pos.X, pos.Y, pos.Z)
     local ti = TweenInfo.new(S.tweenSpeed, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
     local tw = TS:Create(hrp, ti, {CFrame = target})
@@ -234,7 +235,6 @@ local function tweenTo(pos)
     tw:Play()
     tw.Completed:Wait()
     activeTween = nil
-
     pcall(function() hrp.AssemblyLinearVelocity = Vector3.new() end)
     pcall(function()
         if hum then
@@ -242,12 +242,6 @@ local function tweenTo(pos)
             hum.Sit = false
         end
     end)
-end
-
-local function moveToOre(orePos, hrp)
-    if not orePos or not hrp then return end
-    if isCloseEnough(hrp, orePos, 3) then return end
-    pcall(tweenTo, Vector3.new(orePos.X, orePos.Y, orePos.Z))
 end
 
 -- ===== ORE DETECTION =====
@@ -265,9 +259,7 @@ end
 
 local function getOrePosition(ore)
     local rock = ore:FindFirstChild("Rock")
-    if rock and rock:IsA("BasePart") then
-        return rock.Position
-    end
+    if rock and rock:IsA("BasePart") then return rock.Position end
     for _, child in ipairs(ore:GetChildren()) do
         if child:IsA("BasePart") then return child.Position end
     end
@@ -307,25 +299,19 @@ end
 local function loop()
     while S.running and not env.NIStop do
         if not isInMine() then task.wait(0.5); continue end
-
         local any = false
         for _, n in ipairs(ORES) do if S["m"..n] then any = true; break end end
         if not any then task.wait(0.3); continue end
-
         local ore = findBestOre()
         if not ore then task.wait(0.1); continue end
-
         local c = LP.Character
         local hrp = c and c:FindFirstChild("HumanoidRootPart")
         local hum = c and c:FindFirstChild("Humanoid")
         if not hrp or not hum or hum.Health <= 0 then task.wait(0.3); continue end
-
         local orePos = getOrePosition(ore)
         if not orePos then task.wait(0.1); continue end
-
         moveToOre(orePos, hrp)
         if not S.running or env.NIStop then break end
-
         local waitStart = tick()
         while S.running and not env.NIStop do
             local ready = false
@@ -337,13 +323,12 @@ local function loop()
     end
 end
 
--- ===== AUTOMATION SYSTEM =====
+-- ===== AUTOMATION =====
 local function upgradeNoobMax()
     local Event = game:GetService("ReplicatedStorage"):FindFirstChild("__Net")
     if not Event then return end
     local MainRemote = Event:FindFirstChild("MainRemote")
     if not MainRemote then return end
-    
     pcall(function()
         MainRemote:FireServer("UpgradeNoobMax", "Merchant")
     end)
@@ -354,7 +339,6 @@ local function depositMeat()
     if not Event then return end
     local MainRemote = Event:FindFirstChild("MainRemote")
     if not MainRemote then return end
-    
     pcall(function()
         MainRemote:FireServer("DepositMeat")
     end)
@@ -362,51 +346,36 @@ end
 
 local function noobUpgradesLoop()
     A.noobUpgradesRunning = true
-    
     while A.noobUpgradesEnabled and not env.NIStop do
         upgradeNoobMax()
         task.wait(A.noobUpgradesInterval)
     end
-    
     A.noobUpgradesRunning = false
 end
 
 local function meatDepositLoop()
     A.meatDepositRunning = true
-    
     while A.meatDepositEnabled and not env.NIStop do
         depositMeat()
         task.wait(A.meatDepositInterval)
     end
-    
     A.meatDepositRunning = false
 end
 
--- ===== AUTO TRIAL SYSTEM (DÜZELTİLMİŞ) =====
-
--- Trial odasının adını difficulty'e göre döndür
+-- ===== TRIAL SYSTEM (DÜZELTİLDİ) =====
 local function getTrialRoomName()
-    local rooms = {
-        Easy = "EasyTrialRoom",
-        Medium = "MediumTrialRoom",
-        Hard = "HardTrialRoom"
-    }
+    local rooms = { Easy = "EasyTrialRoom", Medium = "MediumTrialRoom", Hard = "HardTrialRoom" }
     return rooms[T.difficulty] or "EasyTrialRoom"
 end
 
--- Trial odasındaki mobları bul
 local function findTargetMob()
     local gc = WS:FindFirstChild("__GAME_CONTENT")
     if not gc then return nil end
-    
     local trials = gc:FindFirstChild("Trials")
     if not trials then return nil end
-    
-    -- Seçilen zorluğa göre trial odasını bul
     local roomName = getTrialRoomName()
     local trialRoom = trials:FindFirstChild(roomName)
     if not trialRoom then
-        -- Eğer oda bulunamazsa, tüm trial odalarını kontrol et
         for _, room in ipairs(trials:GetChildren()) do
             if room:IsA("Folder") or room:IsA("Model") then
                 trialRoom = room
@@ -415,29 +384,18 @@ local function findTargetMob()
         end
     end
     if not trialRoom then return nil end
-    
     local mobs = trialRoom:FindFirstChild("Mobs")
     if not mobs then return nil end
-    
     local ok, children = pcall(function() return mobs:GetChildren() end)
     if not ok or not children then return nil end
-    
     local closest = nil
     local closestDist = math.huge
     local char = LP.Character
     local playerHrp = char and char:FindFirstChild("HumanoidRootPart")
-    
     if not playerHrp then return nil end
-    
     for _, mob in ipairs(children) do
         if mob and mob.Parent then
-            -- Mob modelinin içinde HumanoidRootPart ara
-            local hrp = mob:FindFirstChild("HumanoidRootPart")
-            if not hrp then
-                -- Bazı moblar farklı yapıda olabilir, PrimaryPart'i kontrol et
-                hrp = mob.PrimaryPart
-            end
-            
+            local hrp = mob:FindFirstChild("HumanoidRootPart") or mob.PrimaryPart
             if hrp and hrp:IsA("BasePart") then
                 local hum = mob:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 then
@@ -450,71 +408,54 @@ local function findTargetMob()
             end
         end
     end
-    
     return closest
 end
 
--- Trial odasına teleport
 local function teleportToTrial()
     local coord = TRIAL_COORDS[T.difficulty]
     if not coord then return false end
-    
     local char = LP.Character
     if not char then return false end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
-    
     pcall(function()
         hrp.CFrame = CFrame.new(coord)
         hrp.AssemblyLinearVelocity = Vector3.new()
     end)
-    
     return true
 end
 
--- Trial grinding fonksiyonu (düzeltilmiş)
 local function grindTrial()
     T.grinding = true
     print("[Sqays Hub] Trial grind başladı! Difficulty: " .. T.difficulty)
-    
     local grindStartTime = tick()
-    local maxGrindDuration = 60 -- Maksimum 60 saniye grind (trial süresi kadar)
+    local maxGrindDuration = 60
     local noMobWaitStart = nil
-    
     while T.enabled and T.grinding and not env.NIStop do
-        -- Süre kontrolü (60 saniyeden fazla grind yapma)
         if tick() - grindStartTime > maxGrindDuration then
-            print("[Sqays Hub] Trial grind süresi doldu, durduruluyor...")
+            print("[Sqays Hub] Trial grind süresi doldu.")
             break
         end
-        
         local targetHrp = findTargetMob()
         if not targetHrp then
             if not noMobWaitStart then
                 noMobWaitStart = tick()
             elseif tick() - noMobWaitStart > 10 then
-                -- 10 saniyedir mob yok, trial bitmiş olabilir
                 print("[Sqays Hub] Mob bulunamadı, trial bitmiş olabilir.")
                 break
             end
             task.wait(1)
             continue
         end
-        
-        noMobWaitStart = nil -- Mob bulundu, sayacı sıfırla
-        
+        noMobWaitStart = nil
         local char = LP.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then task.wait(0.5); continue end
-        
         local dist = (hrp.Position - targetHrp.Position).Magnitude
-        
-        -- Moba doğru tween
         if dist > 5 then
-            local targetPos = targetHrp.Position + Vector3.new(0, 0, 3) -- Mobun biraz önüne git
+            local targetPos = targetHrp.Position + Vector3.new(0, 0, 3)
             local tweenDist = (hrp.Position - targetPos).Magnitude
             local tweenDuration = math.max(0.3, tweenDist * S.tweenSpeed * 0.3)
-            
             pcall(function()
                 local tweenInfo = TweenInfo.new(tweenDuration, Enum.EasingStyle.Linear)
                 local tween = TS:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetPos)})
@@ -522,122 +463,66 @@ local function grindTrial()
                 tween.Completed:Wait()
             end)
         end
-        
-        -- Mobun ölmesini bekle veya yeni hedefe geç
         local waitStart = tick()
         while T.enabled and T.grinding and not env.NIStop do
-            -- Süre kontrolü
             if tick() - grindStartTime > maxGrindDuration then break end
-            
             local newTarget = findTargetMob()
-            if not newTarget then
-                -- Hiç mob kalmamış
-                break
-            end
-            
-            -- Eğer hedef mob öldüyse veya çok uzaklaştıysa yeni hedefe geç
-            if not targetHrp.Parent or not targetHrp.Parent.Parent then
-                break
-            end
-            
-            -- 5 saniyeden fazla aynı mobda kalma
-            if tick() - waitStart > 5 then
-                break
-            end
-            
+            if not newTarget then break end
+            if not targetHrp.Parent or not targetHrp.Parent.Parent then break end
+            if tick() - waitStart > 5 then break end
             task.wait(0.1)
         end
-        
-        task.wait(0.1) -- Hızlı hedef değişimi için kısa bekleme
+        task.wait(0.1)
     end
-    
     T.grinding = false
     print("[Sqays Hub] Trial grind durdu.")
 end
 
--- Trial scheduler (düzeltilmiş)
 local function trialScheduler()
     T.schedulerRunning = true
     print("[Sqays Hub] Trial scheduler başladı!")
-    
     while T.enabled and not env.NIStop do
         local currentTime = os.date("*t")
         local minute = currentTime.min
         local second = currentTime.sec
-        
-        -- Join kontrolü: xx:29:10 veya xx:59:10
+        -- Join: xx:29:10-15 veya xx:59:10-15
         if (minute == 29 or minute == 59) and second >= 10 and second <= 15 then
             if T.lastJoinMinute ~= minute then
                 T.lastJoinMinute = minute
-                print("[Sqays Hub] Trial join zamanı! Dakika: " .. minute .. " Saniye: " .. second)
-                
-                -- Mevcut grind'ı durdur
-                if T.grinding then
-                    T.grinding = false
-                    task.wait(0.5)
-                end
-                
+                print("[Sqays Hub] Trial join zamanı! " .. minute .. ":" .. second)
+                if T.grinding then T.grinding = false; task.wait(0.5) end
                 if teleportToTrial() then
-                    print("[Sqays Hub] Trial odasına teleport başarılı! Difficulty: " .. T.difficulty)
-                    if Rayfield then
-                        Rayfield:Notify({
-                            Title = "Auto Trial",
-                            Content = "Joined " .. T.difficulty .. " Trial!",
-                            Duration = 5,
-                            Image = "info"
-                        })
-                    end
+                    print("[Sqays Hub] Teleport başarılı.")
+                    if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="Joined "..T.difficulty.." Trial!", Duration=5, Image="info"}) end
                 else
-                    print("[Sqays Hub] Trial teleport başarısız!")
+                    print("[Sqays Hub] Teleport başarısız!")
                 end
-                
-                task.wait(5) -- Tekrar joinlemeyi engelle
+                task.wait(5)
             end
         end
-        
-        -- Grind kontrolü: xx:30:00 veya xx:00:00
+        -- Grind: xx:30:00-05 veya xx:00:00-05
         if (minute == 30 or minute == 0) and second >= 0 and second <= 5 then
             if T.lastGrindMinute ~= minute then
                 T.lastGrindMinute = minute
-                print("[Sqays Hub] Trial grind başlatma zamanı! Dakika: " .. minute .. " Saniye: " .. second)
-                
-                -- Kısa bir bekleme (mobların spawn olması için)
-                task.wait(3)
-                
+                print("[Sqays Hub] Grind başlatma zamanı! " .. minute .. ":" .. second)
+                task.wait(3) -- mobların spawn olması için bekle
                 if not T.grinding then
-                    -- Önce mobları kontrol et
-                    local mob = findTargetMob()
-                    if mob then
-                        print("[Sqays Hub] Moblar bulundu, grind başlatılıyor...")
+                    if findTargetMob() then
+                        print("[Sqays Hub] Moblar bulundu, grind başlıyor.")
                         task.spawn(grindTrial)
                     else
-                        print("[Sqays Hub] Mob bulunamadı, grind başlatılamadı! (Trial başlamamış olabilir)")
-                        if Rayfield then
-                            Rayfield:Notify({
-                                Title = "Auto Trial",
-                                Content = "No mobs found! Trial may not have started.",
-                                Duration = 5,
-                                Image = "warning"
-                            })
-                        end
+                        print("[Sqays Hub] Mob yok, grind başlatılamadı.")
+                        if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="No mobs found! Trial may not have started.", Duration=5, Image="warning"}) end
                     end
                 end
-                
-                task.wait(5) -- Tekrar grind başlatmayı engelle
+                task.wait(5)
             end
         end
-        
-        -- Join ve grind dakikalarını sıfırla (yeni döngü için)
-        if minute ~= 29 and minute ~= 59 then
-            T.lastJoinMinute = -1
-        end
-        if minute ~= 30 and minute ~= 0 then
-            T.lastGrindMinute = -1
-        end
-        
+        -- Sıfırla
+        if minute ~= 29 and minute ~= 59 then T.lastJoinMinute = -1 end
+        if minute ~= 30 and minute ~= 0 then T.lastGrindMinute = -1 end
         task.wait(1)
     end
-    
     T.schedulerRunning = false
     print("[Sqays Hub] Trial scheduler durdu.")
 end
@@ -662,16 +547,8 @@ local Window = Rayfield:CreateWindow({
     ToggleUIKeybind = Enum.KeyCode.K,
     DisableRayfieldPrompts = false,
     DisableBuildWarnings = true,
-    ConfigurationSaving = {
-        Enabled = true,
-        FolderName = "SqaysHub",
-        FileName = "Config"
-    },
-    Discord = {
-        Enabled = true,
-        Invite = "vV7Db9p2Zs",
-        RememberJoins = false
-    },
+    ConfigurationSaving = { Enabled = true, FolderName = "SqaysHub", FileName = "Config" },
+    Discord = { Enabled = true, Invite = "vV7Db9p2Zs", RememberJoins = false },
     KeySystem = true,
     KeySettings = {
         Title = "Sqays Hub",
@@ -707,7 +584,7 @@ for _, tier in ipairs(tiers) do
                 S[flag] = v
                 if v and not S.running then
                     if not isInMine() then
-                        Rayfield:Notify({Title = "Sqays Hub", Content = "Enter the Mine realm first!", Duration = 4, Image = "info"})
+                        Rayfield:Notify({Title="Sqays Hub", Content="Enter the Mine realm first!", Duration=4, Image="info"})
                         S[flag] = false
                         return
                     end
@@ -729,12 +606,7 @@ TrialTab:CreateToggle({
         T.enabled = v
         if v and not T.schedulerRunning then
             task.spawn(trialScheduler)
-            Rayfield:Notify({
-                Title = "Auto Trial",
-                Content = "Auto Trial started! Will join at xx:29:10 or xx:59:10",
-                Duration = 5,
-                Image = "info"
-            })
+            Rayfield:Notify({Title="Auto Trial", Content="Auto Trial started! Will join at xx:29:10 or xx:59:10", Duration=5, Image="info"})
         end
     end
 })
@@ -747,7 +619,6 @@ TrialTab:CreateDropdown({
     Flag = "trialDifficulty",
     Callback = function(v)
         T.difficulty = v
-        -- Eğer şu anda grinding varsa, durdur ve yeni difficulty ile devam et
         if T.grinding then
             T.grinding = false
             task.wait(0.5)
@@ -764,8 +635,7 @@ TrialTab:CreateParagraph({
 
 -- Settings Tab
 SetTab:CreateSection("Info")
-SetTab:CreateParagraph({Title = "📋 Session", Content = "Executor: " .. execName .. "\nGame: " .. gameName .. "\nPlayer: " .. LP.Name .. "\n\n🔗 Discord: discord.gg/vV7Db9p2Zs"})
-
+SetTab:CreateParagraph({Title="📋 Session", Content="Executor: "..execName.."\nGame: "..gameName.."\nPlayer: "..LP.Name.."\n\n🔗 Discord: discord.gg/vV7Db9p2Zs"})
 SetTab:CreateSection("Glide Speed")
 SetTab:CreateSlider({
     Name = "Glide Speed (s)",
@@ -774,13 +644,8 @@ SetTab:CreateSlider({
     CurrentValue = S.tweenSpeed,
     Callback = function(v) S.tweenSpeed = v end
 })
-
 SetTab:CreateSection("Ghost Mode")
-SetTab:CreateToggle({
-    Name = "Noclip",
-    CurrentValue = false,
-    Callback = function(v) noclip(v) end
-})
+SetTab:CreateToggle({ Name="Noclip", CurrentValue=false, Callback=function(v) noclip(v) end })
 
 -- Automation Tab
 AutoTab:CreateSection("Auto Noob Upgrades")
@@ -792,16 +657,10 @@ AutoTab:CreateToggle({
         A.noobUpgradesEnabled = v
         if v and not A.noobUpgradesRunning then
             task.spawn(noobUpgradesLoop)
-            Rayfield:Notify({
-                Title = "Automation",
-                Content = "Auto Noob Upgrades started!",
-                Duration = 5,
-                Image = "info"
-            })
+            Rayfield:Notify({Title="Automation", Content="Auto Noob Upgrades started!", Duration=5, Image="info"})
         end
     end
 })
-
 AutoTab:CreateSection("Noob Upgrades Interval")
 AutoTab:CreateSlider({
     Name = "Interval (seconds)",
@@ -811,7 +670,6 @@ AutoTab:CreateSlider({
     Flag = "noobUpgradesInterval",
     Callback = function(v) A.noobUpgradesInterval = v end
 })
-
 AutoTab:CreateSection("Auto Meat Deposit")
 AutoTab:CreateToggle({
     Name = "Enable Auto Meat Deposit",
@@ -821,16 +679,10 @@ AutoTab:CreateToggle({
         A.meatDepositEnabled = v
         if v and not A.meatDepositRunning then
             task.spawn(meatDepositLoop)
-            Rayfield:Notify({
-                Title = "Automation",
-                Content = "Auto Meat Deposit started!",
-                Duration = 5,
-                Image = "info"
-            })
+            Rayfield:Notify({Title="Automation", Content="Auto Meat Deposit started!", Duration=5, Image="info"})
         end
     end
 })
-
 AutoTab:CreateSection("Meat Deposit Interval")
 AutoTab:CreateSlider({
     Name = "Interval (seconds)",
@@ -843,49 +695,37 @@ AutoTab:CreateSlider({
 
 Rayfield:LoadConfiguration()
 task.wait(1)
-
-Rayfield:Notify({
-    Title = "Sqays Hub",
-    Content = "🔗 Discord: discord.gg/vV7Db9p2Zs\nKey is in the Discord!",
-    Duration = 10,
-    Image = "info"
-})
+Rayfield:Notify({Title="Sqays Hub", Content="🔗 Discord: discord.gg/vV7Db9p2Zs\nKey is in the Discord!", Duration=10, Image="info"})
 
 task.spawn(function()
-    local flags = {}
-    pcall(function() flags = Window.Flags or {} end)
-    
+    local flags = Window.Flags or {}
     for _, n in ipairs(ORES) do
-        local flag = "m" .. n
-        if flags[flag] then S[flag] = true end
+        if flags["m"..n] then S["m"..n] = true end
     end
-    
     if flags.trialEnabled then T.enabled = true end
     if flags.noobUpgradesEnabled then A.noobUpgradesEnabled = true end
     if flags.noobUpgradesInterval then A.noobUpgradesInterval = flags.noobUpgradesInterval end
     if flags.meatDepositEnabled then A.meatDepositEnabled = true end
     if flags.meatDepositInterval then A.meatDepositInterval = flags.meatDepositInterval end
-    
-    local any = false; for _, n in ipairs(ORES) do if S["m"..n] then any = true; break end end
+    local any = false
+    for _, n in ipairs(ORES) do if S["m"..n] then any = true; break end end
     if any and isInMine() then
         task.wait(2)
-        S.running = true; task.spawn(loop)
+        S.running = true
+        task.spawn(loop)
     end
-    
     if A.noobUpgradesEnabled then
         task.wait(2)
         task.spawn(noobUpgradesLoop)
     end
-    
     if A.meatDepositEnabled then
         task.wait(2)
         task.spawn(meatDepositLoop)
     end
-    
     if T.enabled then
         task.wait(2)
         task.spawn(trialScheduler)
     end
 end)
 
-print("[Sqays Hub] Ready - " .. execName .. " |
+print("[Sqays Hub] Ready - " .. execName .. " | " .. gameName)
