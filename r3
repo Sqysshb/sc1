@@ -374,18 +374,24 @@ end
 
 -- ===== AUTO MOB SYSTEM =====
 local function findTargetMob(mobName)
+    warn("[Mob] Finding target: " .. mobName)
     local gc = WS:FindFirstChild("__GAME_CONTENT")
-    local mobs = gc and gc:FindFirstChild("Mobs")
-    if not mobs then return nil end
+    if not gc then warn("[Mob] No __GAME_CONTENT found"); return nil end
+    
+    local mobs = gc:FindFirstChild("Mobs")
+    if not mobs then warn("[Mob] No Mobs folder found"); return nil end
     
     local ok, children = pcall(function() return mobs:GetChildren() end)
-    if not ok or not children then return nil end
+    if not ok or not children then warn("[Mob] Failed to get children"); return nil end
+    
+    warn("[Mob] Total mobs in folder: " .. #children)
     
     local closest = nil
     local closestDist = math.huge
     
     for _, mob in ipairs(children) do
         if mob.Name == mobName and mob.Parent then
+            warn("[Mob] Found mob with name: " .. mobName)
             local hrp = mob:FindFirstChild("HumanoidRootPart")
             if hrp and hrp:IsA("BasePart") then
                 local hum = mob:FindFirstChildOfClass("Humanoid")
@@ -404,6 +410,7 @@ local function findTargetMob(mobName)
         end
     end
     
+    warn("[Mob] Closest mob found: " .. tostring(closest ~= nil))
     return closest
 end
 
@@ -429,6 +436,7 @@ end
 
 local function mobLoop()
     M.running = true
+    warn("[Mob] Mob loop started")
     
     while M.running and not env.NIStop do
         local targetMob = nil
@@ -436,44 +444,59 @@ local function mobLoop()
         for _, mobName in ipairs(MOBS) do
             local flag = "mob" .. mobName:gsub(" ", "")
             if M[flag] then
+                warn("[Mob] Checking mob: " .. mobName .. " (enabled: " .. tostring(M[flag]) .. ")")
                 if isMobAlive(mobName) then
                     targetMob = mobName
+                    warn("[Mob] Target mob selected: " .. targetMob)
                     break
                 end
             end
         end
         
         if not targetMob then
+            warn("[Mob] No target mob found, waiting...")
             task.wait(1)
             continue
         end
         
         local targetHrp = findTargetMob(targetMob)
         if not targetHrp then
+            warn("[Mob] No target HRP found, waiting...")
             task.wait(1)
             continue
         end
         
         local char = LP.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then task.wait(0.5); continue end
+        if not hrp then 
+            warn("[Mob] No player HRP found")
+            task.wait(0.5); continue 
+        end
         
         local dist = (hrp.Position - targetHrp.Position).Magnitude
+        warn("[Mob] Distance to target: " .. dist)
+        
         if dist > 5 then
+            warn("[Mob] Starting tween to target...")
             pcall(function()
                 local tweenInfo = TweenInfo.new(dist * M.tweenSpeed, Enum.EasingStyle.Linear)
                 local tween = TS:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetHrp.Position + Vector3.new(0, 0, 3))})
                 tween:Play()
                 tween.Completed:Wait()
+                warn("[Mob] Tween completed")
             end)
+        else
+            warn("[Mob] Already close to target")
         end
         
         local waitStart = tick()
         while M.running and not env.NIStop do
             if not isMobAlive(targetMob) then
+                warn("[Mob] Target mob dead")
                 break
             end
             if tick() - waitStart > 30 then
+                warn("[Mob] Timeout waiting for mob death")
                 break
             end
             task.wait(0.1)
@@ -483,6 +506,7 @@ local function mobLoop()
     end
     
     M.running = false
+    warn("[Mob] Mob loop stopped")
 end
 
 -- ===== RAYFIELD =====
