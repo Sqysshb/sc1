@@ -385,6 +385,10 @@ local function findTargetMob(mobName)
     if not ok or not children then warn("[Mob] Failed to get children"); return nil end
     
     warn("[Mob] Total mobs in folder: " .. #children)
+    warn("[Mob] All mob names in folder:")
+    for _, mob in ipairs(children) do
+        warn("  - " .. mob.Name)
+    end
     
     local closest = nil
     local closestDist = math.huge
@@ -440,10 +444,12 @@ local function mobLoop()
     
     while M.running and not env.NIStop do
         local targetMob = nil
+        local anyEnabled = false
         
         for _, mobName in ipairs(MOBS) do
             local flag = "mob" .. mobName:gsub(" ", "")
             if M[flag] then
+                anyEnabled = true
                 warn("[Mob] Checking mob: " .. mobName .. " (enabled: " .. tostring(M[flag]) .. ")")
                 if isMobAlive(mobName) then
                     targetMob = mobName
@@ -451,6 +457,11 @@ local function mobLoop()
                     break
                 end
             end
+        end
+        
+        if not anyEnabled then
+            warn("[Mob] No mobs enabled, stopping loop")
+            break
         end
         
         if not targetMob then
