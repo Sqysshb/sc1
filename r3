@@ -141,6 +141,13 @@ local A = {
     meatDepositRunning = false
 }
 
+-- ===== MOB STATE =====
+local MOBS = {"Goblin","Skeleton","Orc","Pirate","Ninja","Warrior","Pirate Captain","Samurai","Pirate Admiral","Samurai Master","Dark knight","Dark Commander"}
+local M = {
+    running = false,
+    tweenSpeed = 0.6
+}
+
 -- ===== NO CLIP =====
 local nc1, nc2, fixedY
 local function noclip(on)
@@ -365,6 +372,119 @@ local function meatDepositLoop()
     A.meatDepositRunning = false
 end
 
+-- ===== AUTO MOB SYSTEM =====
+local function findTargetMob(mobName)
+    local gc = WS:FindFirstChild("__GAME_CONTENT")
+    local mobs = gc and gc:FindFirstChild("Mobs")
+    if not mobs then return nil end
+    
+    local ok, children = pcall(function() return mobs:GetChildren() end)
+    if not ok or not children then return nil end
+    
+    local closest = nil
+    local closestDist = math.huge
+    
+    for _, mob in ipairs(children) do
+        if mob.Name == mobName and mob.Parent then
+            local hrp = mob:FindFirstChild("HumanoidRootPart")
+            if hrp and hrp:IsA("BasePart") then
+                local hum = mob:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    local char = LP.Character
+                    local playerHrp = char and char:FindFirstChild("HumanoidRootPart")
+                    if playerHrp then
+                        local dist = (playerHrp.Position - hrp.Position).Magnitude
+                        if dist < closestDist then
+                            closestDist = dist
+                            closest = hrp
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closest
+end
+
+local function isMobAlive(mobName)
+    local gc = WS:FindFirstChild("__GAME_CONTENT")
+    local mobs = gc and gc:FindFirstChild("Mobs")
+    if not mobs then return false end
+    
+    local ok, children = pcall(function() return mobs:GetChildren() end)
+    if not ok or not children then return false end
+    
+    for _, mob in ipairs(children) do
+        if mob.Name == mobName and mob.Parent then
+            local hum = mob:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+local function mobLoop()
+    M.running = true
+    
+    while M.running and not env.NIStop do
+        local targetMob = nil
+        
+        for _, mobName in ipairs(MOBS) do
+            local flag = "mob" .. mobName:gsub(" ", "")
+            if M[flag] then
+                if isMobAlive(mobName) then
+                    targetMob = mobName
+                    break
+                end
+            end
+        end
+        
+        if not targetMob then
+            task.wait(1)
+            continue
+        end
+        
+        local targetHrp = findTargetMob(targetMob)
+        if not targetHrp then
+            task.wait(1)
+            continue
+        end
+        
+        local char = LP.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then task.wait(0.5); continue end
+        
+        local dist = (hrp.Position - targetHrp.Position).Magnitude
+        if dist > 5 then
+            pcall(function()
+                local tweenInfo = TweenInfo.new(dist * M.tweenSpeed, Enum.EasingStyle.Linear)
+                local tween = TS:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetHrp.Position + Vector3.new(0, 0, 3))})
+                tween:Play()
+                tween.Completed:Wait()
+            end)
+        end
+        
+        local waitStart = tick()
+        while M.running and not env.NIStop do
+            if not isMobAlive(targetMob) then
+                break
+            end
+            if tick() - waitStart > 30 then
+                break
+            end
+            task.wait(0.1)
+        end
+        
+        task.wait(0.5)
+    end
+    
+    M.running = false
+end
+
 -- ===== RAYFIELD =====
 local Rayfield = nil
 local ok, result = pcall(function() return loadstring(game:HttpGet('https://sirius.menu/rayfield'))() end)
@@ -408,8 +528,9 @@ local Window = Rayfield:CreateWindow({
 })
 
 local Main = Window:CreateTab("⛏ Mine")
-local SetTab = Window:CreateTab("⚙ Settings")
+local Realm3Tab = Window:CreateTab("🌍 Realm 3")
 local AutoTab = Window:CreateTab("🤖 Automation")
+local SetTab = Window:CreateTab("⚙ Settings")
 
 -- Mining Tab
 local tiers = {
@@ -441,6 +562,31 @@ for _, tier in ipairs(tiers) do
     end
 end
 
+-- Realm 3 Tab
+Realm3Tab:CreateSection("Auto Mob")
+for _, mobName in ipairs(MOBS) do
+    local flag = "mob" .. mobName:gsub(" ", "")
+    M[flag] = false
+    Realm3Tab:CreateToggle({
+        Name = mobName,
+        CurrentValue = false,
+        Flag = flag,
+        Callback = function(v)
+            M[flag] = v
+            if v and not M.running then
+                M.running = true
+                task.spawn(mobLoop)
+                Rayfield:Notify({
+                    Title = "Realm 3",
+                    Content = "Auto Mob started!",
+                    Duration = 5,
+                    Image = "info"
+                })
+            end
+        end
+    })
+end
+
 -- Settings Tab
 SetTab:CreateSection("Info")
 SetTab:CreateParagraph({Title = "📋 Session", Content = "Executor: " .. execName .. "\nGame: " .. gameName .. "\nPlayer: " .. LP.Name .. "\n\n🔗 Discord: discord.gg/vV7Db9p2Zs"})
@@ -452,6 +598,15 @@ SetTab:CreateSlider({
     Increment = 0.1,
     CurrentValue = S.tweenSpeed,
     Callback = function(v) S.tweenSpeed = v end
+})
+
+SetTab:CreateSection("Mob Speed")
+SetTab:CreateSlider({
+    Name = "Mob Speed (s)",
+    Range = {0.2, 2},
+    Increment = 0.1,
+    CurrentValue = M.tweenSpeed,
+    Callback = function(v) M.tweenSpeed = v end
 })
 
 SetTab:CreateSection("Ghost Mode")
@@ -539,6 +694,11 @@ task.spawn(function()
         if flags[flag] then S[flag] = true end
     end
     
+    for _, mobName in ipairs(MOBS) do
+        local flag = "mob" .. mobName:gsub(" ", "")
+        if flags[flag] then M[flag] = true end
+    end
+    
     if flags.noobUpgradesEnabled then A.noobUpgradesEnabled = true end
     if flags.noobUpgradesInterval then A.noobUpgradesInterval = flags.noobUpgradesInterval end
     if flags.meatDepositEnabled then A.meatDepositEnabled = true end
@@ -558,6 +718,12 @@ task.spawn(function()
     if A.meatDepositEnabled then
         task.wait(2)
         task.spawn(meatDepositLoop)
+    end
+    
+    local anyMob = false; for _, mobName in ipairs(MOBS) do local flag = "mob" .. mobName:gsub(" ", ""); if M[flag] then anyMob = true; break end end
+    if anyMob then
+        task.wait(2)
+        M.running = true; task.spawn(mobLoop)
     end
 end)
 
