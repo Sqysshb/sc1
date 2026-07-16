@@ -1,4 +1,4 @@
--- Sqays Hub - Auto Mine + Auto Trial (Final + Auto Leave)
+-- Sqays Hub - Auto Mine + Auto Trial (Teleport Only Check)
 local env = _G
 if env.NILoaded then return end
 env.NILoaded = true
@@ -348,7 +348,7 @@ local function meatDepositLoop()
     A.meatDepositRunning = false
 end
 
--- ===== TRIAL SYSTEM =====
+-- ===== TRIAL SYSTEM (TELEPORT ONLY CHECK) =====
 local function findTargetMob()
     local char = LP.Character
     if not char then return nil end
@@ -382,21 +382,6 @@ local function findTargetMob()
         end
     end
     return closestPart
-end
-
-local function isPlayerInTrial()
-    local char = LP.Character
-    if not char then return false end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-
-    local diff = type(T.difficulty) == "string" and T.difficulty or "Easy"
-    local coord = TRIAL_COORDS[diff]
-    if not coord then return false end
-    local dist = (hrp.Position - coord).Magnitude
-    if dist > 50 then return false end
-
-    return findTargetMob() ~= nil
 end
 
 local function leaveTrial()
@@ -433,6 +418,7 @@ local function teleportToTrial()
     local coord = TRIAL_COORDS[diff]
     if not coord then
         warn("[Sqays Hub] No coordinates set for difficulty " .. tostring(diff))
+        T.inTrial = false
         return false
     end
 
@@ -440,6 +426,7 @@ local function teleportToTrial()
     local hrp = char:WaitForChild("HumanoidRootPart", 10)
     if not hrp then
         warn("[Sqays Hub] HumanoidRootPart not found, teleport cancelled.")
+        T.inTrial = false
         return false
     end
 
@@ -461,8 +448,8 @@ local function teleportToTrial()
 end
 
 local function grindTrial()
-    if not isPlayerInTrial() then
-        print("[Sqays Hub] Grind cancelled - not in trial area.")
+    if not T.inTrial then
+        print("[Sqays Hub] Grind cancelled - teleport was not successful.")
         T.grinding = false
         return
     end
@@ -479,11 +466,6 @@ local function grindTrial()
     while T.enabled and T.grinding and not env.NIStop do
         if tick() - grindStartTime > maxGrindDuration then
             print("[Sqays Hub] Grind duration expired.")
-            break
-        end
-
-        if not isPlayerInTrial() then
-            print("[Sqays Hub] No longer in trial, stopping grind.")
             break
         end
 
@@ -551,7 +533,7 @@ local function trialScheduler()
                 if success then
                     if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="Joined "..tostring(T.difficulty).." Trial!", Duration=5, Image="info"}) end
                 else
-                    if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="Teleport failed! Will try to grind from current position.", Duration=5, Image="warning"}) end
+                    if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="Teleport failed! Grind will not start.", Duration=5, Image="error"}) end
                 end
                 task.wait(5)
             end
@@ -563,19 +545,14 @@ local function trialScheduler()
                 T.lastGrindMinute = minute
                 print("[Sqays Hub] Grind start time! " .. minute .. ":" .. second)
                 task.wait(2) -- Wait for mobs to spawn
-                if not T.grinding then
-                    if isPlayerInTrial() then
-                        local target = findTargetMob()
-                        if target then
-                            print("[Sqays Hub] Mob found, starting grind.")
-                            task.spawn(grindTrial)
-                        else
-                            print("[Sqays Hub] No mob found! Trial may not have started or you are too far.")
-                            if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="No mobs found! Make sure trial is active.", Duration=5, Image="warning"}) end
-                        end
+                if not T.grinding and T.inTrial then
+                    local target = findTargetMob()
+                    if target then
+                        print("[Sqays Hub] Mob found, starting grind.")
+                        task.spawn(grindTrial)
                     else
-                        print("[Sqays Hub] Not in trial area, grind skipped.")
-                        if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="Not in trial area! Teleport first or move closer.", Duration=5, Image="warning"}) end
+                        print("[Sqays Hub] No mob found! Trial may not have started.")
+                        if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="No mobs found! Make sure trial is active.", Duration=5, Image="warning"}) end
                     end
                 end
                 task.wait(5)
@@ -715,7 +692,7 @@ TrialTab:CreateSlider({
     Callback = function(v)
         T.leaveAfterMinutes = v
         if T.autoLeaveEnabled then
-            startLeaveTimer() -- Restart timer with new value
+            startLeaveTimer()
         end
     end
 })
@@ -723,7 +700,7 @@ TrialTab:CreateSlider({
 TrialTab:CreateSection("Info")
 TrialTab:CreateParagraph({
     Title = "📋 Schedule",
-    Content = "Auto-joins trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:00\n• xx:00:00\n\nGrinds mobs automatically, leaves after set time if enabled.\n\n⚠ Make sure you're near the trial area!"
+    Content = "Auto-joins trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:00\n• xx:00:00\n\nGrinds mobs automatically, leaves after set time if enabled.\n\n⚠ Teleport must be successful for grind to start."
 })
 
 -- Settings Tab
