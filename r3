@@ -160,7 +160,8 @@ local T = {
     grinding = false,
     schedulerRunning = false,
     trialStartTime = 0,
-    leaveAfter = 5
+    leaveAfter = "4 minutes",
+    autoLeaveEnabled = false
 }
 
 -- ===== NO CLIP =====
@@ -347,16 +348,16 @@ local function shouldJoinTrial()
     local currentTime = os.date("*t")
     local minute = currentTime.min
     local second = currentTime.sec
-    -- Join at xx:59:10 (1 min before xx:00:00 trial) or xx:29:10 (1 min before xx:30:00 trial)
-    return (minute == 59 or minute == 29) and second == 10
+    -- Join at xx:29:10 or xx:59:10 (1 min before trial starts)
+    return (minute == 29 or minute == 59) and second == 10
 end
 
 local function shouldStartGrind()
     local currentTime = os.date("*t")
     local minute = currentTime.min
     local second = currentTime.sec
-    -- Start grind at xx:00:50 or xx:30:50 (50s after mobs spawn)
-    return (minute == 0 or minute == 30) and second == 50
+    -- Start grind at xx:30:05 or xx:00:05 (5s after trial starts)
+    return (minute == 0 or minute == 30) and second == 5
 end
 
 local function leaveTrial()
@@ -380,45 +381,30 @@ local function teleportToTrial()
     if not hrp then return false end
     
     pcall(function()
-        if activeTween then activeTween:Cancel(); activeTween = nil end
-        local target = CFrame.new(coord)
-        local ti = TweenInfo.new(S.tweenSpeed, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-        local tw = TS:Create(hrp, ti, {CFrame = target})
-        activeTween = tw
-        tw:Play()
-        tw.Completed:Wait()
-        activeTween = nil
+        hrp.CFrame = CFrame.new(coord)
         pcall(function() hrp.AssemblyLinearVelocity = Vector3.new() end)
     end)
     
     return true
 end
 
-local function isMobAtPosition(pos, mobType)
+local function getMobCount()
     local gc = WS:FindFirstChild("__GAME_CONTENT")
     local trials = gc and gc:FindFirstChild("Trials")
     local mobs = trials and trials:FindFirstChild("Mobs")
-    if not mobs then return false end
+    if not mobs then return 0 end
     
     local ok, children = pcall(function() return mobs:GetChildren() end)
-    if not ok or not children then return false end
+    if not ok or not children then return 0 end
     
+    local count = 0
     for _, mob in ipairs(children) do
-        if mob.Name == mobType and mob.Parent then
-            local hrp = mob:FindFirstChild("HumanoidRootPart")
-            if hrp and hrp:IsA("BasePart") then
-                local dist = (hrp.Position - pos).Magnitude
-                if dist < 10 then
-                    local hum = mob:FindFirstChildOfClass("Humanoid")
-                    if hum and hum.Health > 0 then
-                        return true
-                    end
-                end
-            end
+        if mob.Parent then
+            count = count + 1
         end
     end
     
-    return false
+    return count
 end
 
 local function grindTrial()
@@ -426,36 +412,52 @@ local function grindTrial()
     T.trialStartTime = tick()
     
     local mobOrder = {"Goblin", "Skeleton", "Orc"}
+    local initialCount = getMobCount()
     
-    for _, mobType in ipairs(mobOrder) do
-        if not T.enabled or not T.grinding or env.NIStop then break end
+    while T.enabled and T.grinding and not env.NIStop do
+        local currentCount = getMobCount()
         
-        local coords = MOB_COORDS[mobType]
-        if not coords then continue end
+        if currentCount == 0 then
+            task.wait(1)
+            continue
+        end
         
-        for _, coord in ipairs(coords) do
+        for _, mobType in ipairs(mobOrder) do
             if not T.enabled or not T.grinding or env.NIStop then break end
             
-            local char = LP.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if not hrp then task.wait(0.5); continue end
+            local coords = MOB_COORDS[mobType]
+            if not coords then continue end
             
-            if not isCloseEnough(hrp, coord, 5) then
-                pcall(tweenTo, coord)
-            end
-            
-            local waitStart = tick()
-            while T.enabled and T.grinding and not env.NIStop do
-                if not isMobAtPosition(coord, mobType) then
-                    break
+            for _, coord in ipairs(coords) do
+                if not T.enabled or not T.grinding or env.NIStop then break end
+                
+                local char = LP.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if not hrp then task.wait(0.5); continue end
+                
+                if not isCloseEnough(hrp, coord, 5) then
+                    pcall(function()
+                        hrp.CFrame = CFrame.new(coord)
+                        pcall(function() hrp.AssemblyLinearVelocity = Vector3.new() end)
+                    end)
                 end
-                if tick() - waitStart > 45 then
-                    break
+                
+                local waitStart = tick()
+                local countBefore = getMobCount()
+                
+                while T.enabled and T.grinding and not env.NIStop do
+                    local countAfter = getMobCount()
+                    if countAfter < countBefore then
+                        break
+                    end
+                    if tick() - waitStart > 45 then
+                        break
+                    end
+                    task.wait(0.1)
                 end
-                task.wait(0.1)
+                
+                task.wait(0.5)
             end
-            
-            task.wait(0.5)
         end
     end
     
@@ -488,15 +490,16 @@ local function trialScheduler()
         end
         
         -- Check if should leave
-        if T.trialStartTime > 0 and T.grinding then
+        if T.autoLeaveEnabled and T.trialStartTime > 0 and T.grinding then
             local elapsed = tick() - T.trialStartTime
-            if elapsed >= (T.leaveAfter * 60) then
+            local leaveMinutes = tonumber(T.leaveAfter:match("%d+")) or 4
+            if elapsed >= (leaveMinutes * 60) then
                 leaveTrial()
                 T.trialStartTime = 0
                 T.grinding = false
                 Rayfield:Notify({
                     Title = "Auto Trial",
-                    Content = "Left trial after " .. T.leaveAfter .. " minutes",
+                    Content = "Left trial after " .. T.leaveAfter,
                     Duration = 5,
                     Image = "info"
                 })
@@ -520,8 +523,8 @@ if not Rayfield then warn("[Sqays Hub] Failed to load Rayfield UI"); return end
 local Window = Rayfield:CreateWindow({
     Name = "Sqays Hub - " .. gameName,
     Icon = 0,
-    LoadingTitle = "Made by Sqays & Exotic",
-    LoadingSubtitle = "Credits to Sqays & Exotic | " .. execName,
+    LoadingTitle = "Made by Exotic",
+    LoadingSubtitle = "Credits to Exotic | " .. execName,
     ShowText = "Sqays Hub",
     Theme = "DarkBlue",
     ToggleUIKeybind = Enum.KeyCode.K,
@@ -615,7 +618,7 @@ TrialTab:CreateToggle({
             task.spawn(trialScheduler)
             Rayfield:Notify({
                 Title = "Auto Trial",
-                Content = "Auto Trial started! Will join at xx:59:10 or xx:29:10",
+                Content = "Auto Trial started! Will join at xx:29:10 or xx:59:10",
                 Duration = 5,
                 Image = "info"
             })
@@ -623,14 +626,25 @@ TrialTab:CreateToggle({
     end
 })
 
+TrialTab:CreateSection("Auto Leave")
+TrialTab:CreateToggle({
+    Name = "Enable Auto Leave",
+    CurrentValue = false,
+    Flag = "trialAutoLeaveEnabled",
+    Callback = function(v)
+        T.autoLeaveEnabled = v
+    end
+})
+
 TrialTab:CreateSection("Leave After")
-TrialTab:CreateSlider({
-    Name = "Leave After (minutes)",
-    Range = {1, 20},
-    Increment = 1,
-    CurrentValue = T.leaveAfter,
+TrialTab:CreateDropdown({
+    Name = "Leave After",
+    Options = {"1 minute", "2 minutes", "3 minutes", "4 minutes", "5 minutes", "6 minutes", "7 minutes", "8 minutes", "9 minutes", "10 minutes", "15 minutes", "20 minutes"},
+    CurrentOption = "4 minutes",
     Flag = "trialLeaveAfter",
-    Callback = function(v) T.leaveAfter = v end
+    Callback = function(v)
+        T.leaveAfter = v
+    end
 })
 
 TrialTab:CreateSection("Difficulty")
@@ -647,7 +661,7 @@ TrialTab:CreateDropdown({
 TrialTab:CreateSection("Info")
 TrialTab:CreateParagraph({
     Title = "📋 Schedule",
-    Content = "Auto-joins trial every 30 minutes:\n• xx:59:10 (1 min before xx:00:00)\n• xx:29:10 (1 min before xx:30:00)\n\nAuto-grind starts at:\n• xx:00:50 (50s after mobs spawn)\n• xx:30:50 (50s after mobs spawn)\n\nAuto-leave after X minutes from grind start"
+    Content = "Auto-joins trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:05 (5s after trial starts)\n• xx:00:05 (5s after trial starts)\n\nGrind loops continuously for waves\nAuto-leave optional with toggle"
 })
 
 Rayfield:LoadConfiguration()
@@ -672,6 +686,7 @@ task.spawn(function()
     if flags.trialEnabled then T.enabled = true end
     if flags.trialDifficulty then T.difficulty = flags.trialDifficulty end
     if flags.trialLeaveAfter then T.leaveAfter = flags.trialLeaveAfter end
+    if flags.trialAutoLeaveEnabled then T.autoLeaveEnabled = flags.trialAutoLeaveEnabled end
     
     local any = false; for _, n in ipairs(ORES) do if S["m"..n] then any = true; break end end
     if any and isInMine() then
