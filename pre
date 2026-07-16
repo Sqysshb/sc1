@@ -7,13 +7,12 @@ env.AWTHLoaded = true; env.AWTHStop = false
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
 local WS = game:GetService("Workspace")
-local TS = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
 -- ===== STATE =====
 local S = {
     enabled = false,
-    running = false,
-    speed = 0.6
+    running = false
 }
 
 -- ===== FIND CLOSEST HUMANOID =====
@@ -53,117 +52,78 @@ local function autoWalkLoop()
     while S.enabled and not env.AWTHStop do
         local target = findClosestHumanoid()
         if not target then
-            task.wait(1)
+            task.wait(0.1)
             continue
         end
         
         local char = LP.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then task.wait(0.5); continue end
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum then task.wait(0.1); continue end
+        
+        local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
+        if not targetHum or targetHum.Health <= 0 then
+            continue
+        end
         
         local dist = (hrp.Position - target.Position).Magnitude
         if dist > 5 then
-            pcall(function()
-                local tweenInfo = TweenInfo.new(dist * S.speed, Enum.EasingStyle.Linear)
-                local tween = TS:Create(hrp, tweenInfo, {CFrame = CFrame.new(target.Position + Vector3.new(0, 0, 3))})
-                tween:Play()
-                tween.Completed:Wait()
-            end)
+            hum:MoveTo(target.Position)
+            
+            while S.enabled and not env.AWTHStop do
+                local newTargetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
+                if not newTargetHum or newTargetHum.Health <= 0 then
+                    break
+                end
+                
+                local newDist = (hrp.Position - target.Position).Magnitude
+                if newDist <= 5 then
+                    break
+                end
+                
+                task.wait(0.05)
+            end
         end
         
-        task.wait(0.5)
+        task.wait(0.05)
     end
     
     S.running = false
 end
 
--- ===== RAYFIELD =====
-local Rayfield = nil
-local ok, result = pcall(function() return loadstring(game:HttpGet('https://sirius.menu/rayfield'))() end)
-if ok and result then Rayfield = result end
-if not Rayfield then
-    ok, result = pcall(function() return loadstring(game:HttpGet('https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua'))() end)
-    if ok and result then Rayfield = result end
-end
-if not Rayfield then warn("[Auto Walk] Failed to load Rayfield UI"); return end
+-- ===== FLUENT UI =====
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+if not Fluent then warn("[Auto Walk] Failed to load Fluent UI"); return end
 
-local Window = Rayfield:CreateWindow({
-    Name = "Auto Walk to Humanoid",
-    Icon = 0,
-    LoadingTitle = "Auto Walk",
-    LoadingSubtitle = "Walks to closest humanoid",
-    ShowText = "Auto Walk",
-    Theme = "DarkBlue",
-    ToggleUIKeybind = Enum.KeyCode.K,
-    DisableRayfieldPrompts = false,
-    DisableBuildWarnings = true,
-    ConfigurationSaving = {
-        Enabled = true,
-        FolderName = "AutoWalk",
-        FileName = "Config"
-    },
-    KeySystem = false
+local Window = Fluent:CreateWindow({
+    Title = "Auto Walk to Humanoid",
+    SubTitle = "Walks to closest humanoid",
+    TabWidth = 130,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.K
 })
 
-local Main = Window:CreateTab("🚶 Auto Walk")
+local Tabs = {
+    Main = Window:AddTab({ Title = "Auto Walk", Icon = "🚶" })
+}
 
-Main:CreateSection("Auto Walk")
-Main:CreateToggle({
-    Name = "Enable Auto Walk",
-    CurrentValue = false,
-    Flag = "autoWalkEnabled",
+Tabs.Main:AddToggle("AutoWalkToggle", {
+    Title = "Enable Auto Walk",
+    Description = "Automatically walks to the closest humanoid",
+    Default = false,
     Callback = function(v)
         S.enabled = v
         if v and not S.running then
             task.spawn(autoWalkLoop)
-            Rayfield:Notify({
-                Title = "Auto Walk",
-                Content = "Auto Walk started!",
-                Duration = 5,
-                Image = "info"
-            })
         end
     end
 })
 
-Main:CreateSection("Speed")
-Main:CreateSlider({
-    Name = "Walk Speed (s)",
-    Range = {0.2, 2},
-    Increment = 0.1,
-    CurrentValue = S.speed,
-    Flag = "walkSpeed",
-    Callback = function(v) S.speed = v end
+Tabs.Main:AddParagraph({
+    Title = "Info",
+    Content = "Automatically walks to the closest humanoid using normal Roblox walking animation."
 })
-
-Main:CreateSection("Info")
-Main:CreateParagraph({
-    Title = "📋 Info",
-    Content = "Automatically walks to the closest humanoid\n\nUses tween movement to reach target\n\nSpeed can be adjusted in settings"
-})
-
-Rayfield:LoadConfiguration()
-task.wait(1)
-
-Rayfield:Notify({
-    Title = "Auto Walk",
-    Content = "Ready! Press K to toggle UI",
-    Duration = 5,
-    Image = "info"
-})
-
--- ===== CONFIG LOADING =====
-task.spawn(function()
-    local flags = {}
-    pcall(function() flags = Window.Flags or {} end)
-    
-    if flags.autoWalkEnabled then S.enabled = true end
-    if flags.walkSpeed then S.speed = flags.walkSpeed end
-    
-    if S.enabled then
-        task.wait(2)
-        task.spawn(autoWalkLoop)
-    end
-end)
 
 print("[Auto Walk] Ready")
