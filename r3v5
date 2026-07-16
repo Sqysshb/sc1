@@ -1,0 +1,127 @@
+-- Auto Walk to Humanoid
+local env = getgenv and getgenv() or _G
+if env.AWTHLoaded then return end
+env.AWTHLoaded = true; env.AWTHStop = false
+
+-- ===== SERVICES =====
+local Players = game:GetService("Players")
+local LP = Players.LocalPlayer
+local WS = game:GetService("Workspace")
+
+-- ===== STATE =====
+local S = {
+    enabled = false,
+    running = false
+}
+
+-- ===== FIND CLOSEST HUMANOID =====
+local function findClosestHumanoid()
+    local closest = nil
+    local closestDist = math.huge
+    
+    for _, obj in ipairs(WS:GetDescendants()) do
+        if obj:IsA("Humanoid") then
+            local hrp = obj.Parent:FindFirstChild("HumanoidRootPart")
+            if hrp and hrp:IsA("BasePart") then
+                local character = obj.Parent
+                if character ~= LP.Character then
+                    local hum = obj
+                    if hum and hum.Health > 0 then
+                        local playerHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                        if playerHrp then
+                            local dist = (playerHrp.Position - hrp.Position).Magnitude
+                            if dist < closestDist then
+                                closestDist = dist
+                                closest = hrp
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closest
+end
+
+-- ===== AUTO WALK LOOP =====
+local function autoWalkLoop()
+    S.running = true
+    
+    while S.enabled and not env.AWTHStop do
+        local target = findClosestHumanoid()
+        if not target then
+            continue
+        end
+        
+        local char = LP.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum then continue end
+        
+        local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
+        if not targetHum or targetHum.Health <= 0 then
+            continue
+        end
+        
+        local dist = (hrp.Position - target.Position).Magnitude
+        if dist > 5 then
+            hum:MoveTo(target.Position)
+            
+            while S.enabled and not env.AWTHStop do
+                local newTargetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
+                if not newTargetHum or newTargetHum.Health <= 0 then
+                    break
+                end
+                
+                local newDist = (hrp.Position - target.Position).Magnitude
+                if newDist <= 5 then
+                    break
+                end
+                
+                -- Check if there's a closer target
+                local closerTarget = findClosestHumanoid()
+                if closerTarget and closerTarget ~= target then
+                    local closerDist = (hrp.Position - closerTarget.Position).Magnitude
+                    if closerDist < newDist then
+                        break
+                    end
+                end
+                
+                task.wait(0.01)
+            end
+        end
+    end
+    
+    S.running = false
+end
+
+-- ===== COMMAND =====
+getgenv().AutoWalk = {
+    Start = function()
+        if not S.running then
+            S.enabled = true
+            task.spawn(autoWalkLoop)
+            print("[Auto Walk] Started")
+        end
+    end,
+    Stop = function()
+        S.enabled = false
+        print("[Auto Walk] Stopped")
+    end,
+    Toggle = function()
+        S.enabled = not S.enabled
+        if S.enabled and not S.running then
+            task.spawn(autoWalkLoop)
+            print("[Auto Walk] Started")
+        else
+            print("[Auto Walk] Stopped")
+        end
+    end
+}
+
+print("[Auto Walk] Loaded")
+print("Commands:")
+print("  AutoWalk:Start()")
+print("  AutoWalk:Stop()")
+print("  AutoWalk:Toggle()")
