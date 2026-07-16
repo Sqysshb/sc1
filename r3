@@ -131,23 +131,14 @@ local S = {
     tweenSpeed = 0.6, -- Glide speed (s → lower = faster)
 }
 
--- ===== TRIAL STATE =====
-local TRIAL_COORDS = Vector3.new(853.2357788085938, 11.014291763305664, 13443.501953125)
-
-local MOB_COORDS = {
-    Vector3.new(752.47119140625, 10.54693603515625, 13500.953125),
-    Vector3.new(752.4614868164062, 10.54693603515625, 13460.4580078125),
-    Vector3.new(720.5638427734375, 10.546934127807617, 13499.5654296875),
-    Vector3.new(719.0774536132812, 10.546934127807617, 13461.4169921875),
-    Vector3.new(691.6233520507812, 10.546934127807617, 13470.2548828125),
-    Vector3.new(691.3533325195312, 10.546934127807617, 13496.181640625),
-    Vector3.new(661.2548828125, 10.546934127807617, 13482.4951171875)
-}
-
-local T = {
-    enabled = false,
-    grinding = false,
-    schedulerRunning = false
+-- ===== AUTOMATION STATE =====
+local A = {
+    noobUpgradesEnabled = false,
+    noobUpgradesInterval = 5,
+    meatDepositEnabled = false,
+    meatDepositInterval = 5,
+    noobUpgradesRunning = false,
+    meatDepositRunning = false
 }
 
 -- ===== NO CLIP =====
@@ -329,120 +320,49 @@ local function loop()
     end
 end
 
--- ===== AUTO TRIAL SYSTEM =====
-local function shouldJoinTrial()
-    local currentTime = os.date("*t")
-    local minute = currentTime.min
-    local second = currentTime.sec
-    -- Join at xx:29:10 or xx:59:10 (1 min before trial starts)
-    return (minute == 29 or minute == 59) and second == 10
-end
-
-local function shouldStartGrind()
-    local currentTime = os.date("*t")
-    local minute = currentTime.min
-    local second = currentTime.sec
-    -- Start grind at xx:30:05 or xx:00:05 (5s after trial starts)
-    return (minute == 0 or minute == 30) and second == 5
-end
-
-local function teleportToTrial()
-    local char = LP.Character
-    if not char then return false end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
+-- ===== AUTOMATION SYSTEM =====
+local function upgradeNoobMax()
+    local Event = game:GetService("ReplicatedStorage"):FindFirstChild("__Net")
+    if not Event then return end
+    local MainRemote = Event:FindFirstChild("MainRemote")
+    if not MainRemote then return end
     
     pcall(function()
-        hrp.CFrame = CFrame.new(TRIAL_COORDS)
-        pcall(function() hrp.AssemblyLinearVelocity = Vector3.new() end)
+        MainRemote:FireServer("UpgradeNoobMax", "Merchant")
     end)
-    
-    return true
 end
 
-local function getMobCount()
-    local gc = WS:FindFirstChild("__GAME_CONTENT")
-    local trials = gc and gc:FindFirstChild("Trials")
-    local mobs = trials and trials:FindFirstChild("Mobs")
-    if not mobs then return 0 end
+local function depositMeat()
+    local Event = game:GetService("ReplicatedStorage"):FindFirstChild("__Net")
+    if not Event then return end
+    local MainRemote = Event:FindFirstChild("MainRemote")
+    if not MainRemote then return end
     
-    local ok, children = pcall(function() return mobs:GetChildren() end)
-    if not ok or not children then return 0 end
-    
-    local count = 0
-    for _, mob in ipairs(children) do
-        if mob.Parent then
-            count = count + 1
-        end
-    end
-    
-    return count
+    pcall(function()
+        MainRemote:FireServer("DepositMeat")
+    end)
 end
 
-local function grindTrial()
-    T.grinding = true
+local function noobUpgradesLoop()
+    A.noobUpgradesRunning = true
     
-    for i, coord in ipairs(MOB_COORDS) do
-        if not T.enabled or not T.grinding or env.NIStop then break end
-        
-        local char = LP.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then task.wait(0.5); continue end
-        
-        if not isCloseEnough(hrp, coord, 5) then
-            pcall(function()
-                hrp.CFrame = CFrame.new(coord)
-                pcall(function() hrp.AssemblyLinearVelocity = Vector3.new() end)
-            end)
-        end
-        
-        local waitStart = tick()
-        local countBefore = getMobCount()
-        
-        while T.enabled and T.grinding and not env.NIStop do
-            local countAfter = getMobCount()
-            if countAfter < countBefore then
-                break
-            end
-            if tick() - waitStart > 45 then
-                break
-            end
-            task.wait(0.1)
-        end
-        
-        task.wait(0.5)
+    while A.noobUpgradesEnabled and not env.NIStop do
+        upgradeNoobMax()
+        task.wait(A.noobUpgradesInterval)
     end
     
-    T.grinding = false
+    A.noobUpgradesRunning = false
 end
 
-local function trialScheduler()
-    T.schedulerRunning = true
+local function meatDepositLoop()
+    A.meatDepositRunning = true
     
-    while T.enabled and not env.NIStop do
-        if shouldJoinTrial() then
-            if teleportToTrial() then
-                Rayfield:Notify({
-                    Title = "Auto Trial",
-                    Content = "Joined Easy Trial!",
-                    Duration = 5,
-                    Image = "info"
-                })
-            end
-            
-            task.wait(60)
-        elseif shouldStartGrind() then
-            if not T.grinding then
-                task.spawn(grindTrial)
-            end
-            
-            task.wait(60)
-        else
-            task.wait(1)
-        end
+    while A.meatDepositEnabled and not env.NIStop do
+        depositMeat()
+        task.wait(A.meatDepositInterval)
     end
     
-    T.schedulerRunning = false
+    A.meatDepositRunning = false
 end
 
 -- ===== RAYFIELD =====
@@ -489,7 +409,7 @@ local Window = Rayfield:CreateWindow({
 
 local Main = Window:CreateTab("⛏ Mine")
 local SetTab = Window:CreateTab("⚙ Settings")
-local TrialTab = Window:CreateTab("⚔ Auto Trial")
+local AutoTab = Window:CreateTab("🤖 Automation")
 
 -- Mining Tab
 local tiers = {
@@ -541,19 +461,19 @@ SetTab:CreateToggle({
     Callback = function(v) noclip(v) end
 })
 
--- Auto Trial Tab
-TrialTab:CreateSection("Auto Trial")
-TrialTab:CreateToggle({
-    Name = "Enable Auto Trial",
+-- Automation Tab
+AutoTab:CreateSection("Auto Noob Upgrades")
+AutoTab:CreateToggle({
+    Name = "Enable Auto Noob Upgrades",
     CurrentValue = false,
-    Flag = "trialEnabled",
+    Flag = "noobUpgradesEnabled",
     Callback = function(v)
-        T.enabled = v
-        if v and not T.schedulerRunning then
-            task.spawn(trialScheduler)
+        A.noobUpgradesEnabled = v
+        if v and not A.noobUpgradesRunning then
+            task.spawn(noobUpgradesLoop)
             Rayfield:Notify({
-                Title = "Auto Trial",
-                Content = "Auto Trial started! Will join at xx:29:10 or xx:59:10",
+                Title = "Automation",
+                Content = "Auto Noob Upgrades started!",
                 Duration = 5,
                 Image = "info"
             })
@@ -561,10 +481,43 @@ TrialTab:CreateToggle({
     end
 })
 
-TrialTab:CreateSection("Info")
-TrialTab:CreateParagraph({
-    Title = "📋 Schedule",
-    Content = "Auto-joins Easy Trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:05 (5s after trial starts)\n• xx:00:05 (5s after trial starts)\n\nGrinds all 7 mobs in order"
+AutoTab:CreateSection("Noob Upgrades Interval")
+AutoTab:CreateSlider({
+    Name = "Interval (seconds)",
+    Range = {1, 10},
+    Increment = 1,
+    CurrentValue = A.noobUpgradesInterval,
+    Flag = "noobUpgradesInterval",
+    Callback = function(v) A.noobUpgradesInterval = v end
+})
+
+AutoTab:CreateSection("Auto Meat Deposit")
+AutoTab:CreateToggle({
+    Name = "Enable Auto Meat Deposit",
+    CurrentValue = false,
+    Flag = "meatDepositEnabled",
+    Callback = function(v)
+        A.meatDepositEnabled = v
+        if v and not A.meatDepositRunning then
+            task.spawn(meatDepositLoop)
+            Rayfield:Notify({
+                Title = "Automation",
+                Content = "Auto Meat Deposit started!",
+                Duration = 5,
+                Image = "info"
+            })
+        end
+    end
+})
+
+AutoTab:CreateSection("Meat Deposit Interval")
+AutoTab:CreateSlider({
+    Name = "Interval (seconds)",
+    Range = {1, 10},
+    Increment = 1,
+    CurrentValue = A.meatDepositInterval,
+    Flag = "meatDepositInterval",
+    Callback = function(v) A.meatDepositInterval = v end
 })
 
 Rayfield:LoadConfiguration()
@@ -586,7 +539,10 @@ task.spawn(function()
         if flags[flag] then S[flag] = true end
     end
     
-    if flags.trialEnabled then T.enabled = true end
+    if flags.noobUpgradesEnabled then A.noobUpgradesEnabled = true end
+    if flags.noobUpgradesInterval then A.noobUpgradesInterval = flags.noobUpgradesInterval end
+    if flags.meatDepositEnabled then A.meatDepositEnabled = true end
+    if flags.meatDepositInterval then A.meatDepositInterval = flags.meatDepositInterval end
     
     local any = false; for _, n in ipairs(ORES) do if S["m"..n] then any = true; break end end
     if any and isInMine() then
