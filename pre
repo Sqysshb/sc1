@@ -52,14 +52,13 @@ local function autoWalkLoop()
     while S.enabled and not env.AWTHStop do
         local target = findClosestHumanoid()
         if not target then
-            task.wait(0.1)
             continue
         end
         
         local char = LP.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if not hrp or not hum then task.wait(0.1); continue end
+        if not hrp or not hum then continue end
         
         local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
         if not targetHum or targetHum.Health <= 0 then
@@ -81,11 +80,18 @@ local function autoWalkLoop()
                     break
                 end
                 
-                task.wait(0.05)
+                -- Check if there's a closer target
+                local closerTarget = findClosestHumanoid()
+                if closerTarget and closerTarget ~= target then
+                    local closerDist = (hrp.Position - closerTarget.Position).Magnitude
+                    if closerDist < newDist then
+                        break
+                    end
+                end
+                
+                task.wait(0.01)
             end
         end
-        
-        task.wait(0.05)
     end
     
     S.running = false
