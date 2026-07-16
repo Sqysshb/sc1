@@ -1,4 +1,4 @@
--- Sqays Hub - Auto Mine + Auto Trial (Teleport & Grind Fix)
+-- Sqays Hub - Auto Mine + Auto Trial (Final + Auto Leave)
 local env = _G
 if env.NILoaded then return end
 env.NILoaded = true
@@ -135,11 +135,10 @@ local A = {
 }
 
 -- ===== TRIAL STATE =====
--- UPDATE COORDINATES HERE using Dex if teleport fails
 local TRIAL_COORDS = {
-    Easy = Vector3.new(853.2357788085938, 11.014291763305664, 13443.501953125),
-    Medium = Vector3.new(878.9148559570312, 11.030077934265137, 13419.0625),
-    Hard = Vector3.new(905.1489868164062, 11.014291763305664, 13443.5712890625)
+    Easy = Vector3.new(853.2357, 11.0142, 13443.5019),
+    Medium = Vector3.new(878.9148, 11.0300, 13419.0625),
+    Hard = Vector3.new(905.1489, 11.0142, 13443.5712)
 }
 
 local T = {
@@ -148,7 +147,11 @@ local T = {
     grinding = false,
     schedulerRunning = false,
     lastJoinMinute = -1,
-    lastGrindMinute = -1
+    lastGrindMinute = -1,
+    inTrial = false,
+    autoLeaveEnabled = false,
+    leaveAfterMinutes = 1,
+    leaveTimer = nil
 }
 
 -- ===== NO CLIP =====
@@ -345,7 +348,7 @@ local function meatDepositLoop()
     A.meatDepositRunning = false
 end
 
--- ===== TRIAL SYSTEM (FIXED) =====
+-- ===== TRIAL SYSTEM =====
 local function findTargetMob()
     local char = LP.Character
     if not char then return nil end
@@ -381,11 +384,55 @@ local function findTargetMob()
     return closestPart
 end
 
+local function isPlayerInTrial()
+    local char = LP.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    local diff = type(T.difficulty) == "string" and T.difficulty or "Easy"
+    local coord = TRIAL_COORDS[diff]
+    if not coord then return false end
+    local dist = (hrp.Position - coord).Magnitude
+    if dist > 50 then return false end
+
+    return findTargetMob() ~= nil
+end
+
+local function leaveTrial()
+    pcall(function()
+        local Event = game:GetService("ReplicatedStorage"):FindFirstChild("__Net")
+        if Event then
+            local MainRemote = Event:FindFirstChild("MainRemote")
+            if MainRemote then
+                MainRemote:FireServer("LeaveTrial")
+                print("[Sqays Hub] Left the trial.")
+            end
+        end
+    end)
+    T.inTrial = false
+    if T.leaveTimer then
+        T.leaveTimer:Disconnect()
+        T.leaveTimer = nil
+    end
+end
+
+local function startLeaveTimer()
+    if T.leaveTimer then T.leaveTimer:Disconnect() end
+    if not T.autoLeaveEnabled then return end
+    local delaySeconds = T.leaveAfterMinutes * 60
+    T.leaveTimer = task.delay(delaySeconds, function()
+        if T.enabled and T.inTrial then
+            leaveTrial()
+        end
+    end)
+end
+
 local function teleportToTrial()
-    local diff = tostring(T.difficulty) -- Ensure it's a string
+    local diff = type(T.difficulty) == "string" and T.difficulty or "Easy"
     local coord = TRIAL_COORDS[diff]
     if not coord then
-        warn("[Sqays Hub] No coordinates set for difficulty " .. diff)
+        warn("[Sqays Hub] No coordinates set for difficulty " .. tostring(diff))
         return false
     end
 
@@ -404,23 +451,39 @@ local function teleportToTrial()
     task.wait(0.5)
     if (hrp.Position - coord).Magnitude > 15 then
         warn("[Sqays Hub] Teleport failed, distance too large. Current: " .. tostring(hrp.Position))
+        T.inTrial = false
         return false
     end
 
     print("[Sqays Hub] Teleport successful. Position: " .. tostring(hrp.Position))
+    T.inTrial = true
     return true
 end
 
 local function grindTrial()
+    if not isPlayerInTrial() then
+        print("[Sqays Hub] Grind cancelled - not in trial area.")
+        T.grinding = false
+        return
+    end
+
     T.grinding = true
     print("[Sqays Hub] Trial grind started! Difficulty: " .. tostring(T.difficulty))
+
+    startLeaveTimer()
+
     local grindStartTime = tick()
-    local maxGrindDuration = 55
+    local maxGrindDuration = 60
     local noMobWaitStart = nil
 
     while T.enabled and T.grinding and not env.NIStop do
         if tick() - grindStartTime > maxGrindDuration then
             print("[Sqays Hub] Grind duration expired.")
+            break
+        end
+
+        if not isPlayerInTrial() then
+            print("[Sqays Hub] No longer in trial, stopping grind.")
             break
         end
 
@@ -501,13 +564,18 @@ local function trialScheduler()
                 print("[Sqays Hub] Grind start time! " .. minute .. ":" .. second)
                 task.wait(2) -- Wait for mobs to spawn
                 if not T.grinding then
-                    local target = findTargetMob()
-                    if target then
-                        print("[Sqays Hub] Mob found, starting grind.")
-                        task.spawn(grindTrial)
+                    if isPlayerInTrial() then
+                        local target = findTargetMob()
+                        if target then
+                            print("[Sqays Hub] Mob found, starting grind.")
+                            task.spawn(grindTrial)
+                        else
+                            print("[Sqays Hub] No mob found! Trial may not have started or you are too far.")
+                            if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="No mobs found! Make sure trial is active.", Duration=5, Image="warning"}) end
+                        end
                     else
-                        print("[Sqays Hub] No mob found! Trial may not have started or you are too far.")
-                        if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="No mobs found! Make sure trial is active.", Duration=5, Image="warning"}) end
+                        print("[Sqays Hub] Not in trial area, grind skipped.")
+                        if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="Not in trial area! Teleport first or move closer.", Duration=5, Image="warning"}) end
                     end
                 end
                 task.wait(5)
@@ -612,10 +680,10 @@ TrialTab:CreateSection("Difficulty")
 TrialTab:CreateDropdown({
     Name = "Select Difficulty",
     Options = {"Easy", "Medium", "Hard"},
-    CurrentOption = "Easy",
+    CurrentOption = T.difficulty,
     Flag = "trialDifficulty",
     Callback = function(v)
-        T.difficulty = tostring(v) -- Ensure string
+        T.difficulty = type(v) == "string" and v or "Easy"
         if T.grinding then
             T.grinding = false
             task.wait(0.5)
@@ -624,10 +692,38 @@ TrialTab:CreateDropdown({
     end
 })
 
+TrialTab:CreateSection("Auto Leave")
+TrialTab:CreateToggle({
+    Name = "Enable Auto Leave",
+    CurrentValue = false,
+    Flag = "autoLeaveEnabled",
+    Callback = function(v)
+        T.autoLeaveEnabled = v
+        if v then
+            startLeaveTimer()
+        else
+            if T.leaveTimer then T.leaveTimer:Disconnect(); T.leaveTimer = nil end
+        end
+    end
+})
+TrialTab:CreateSlider({
+    Name = "Leave After (minutes)",
+    Range = {1, 10},
+    Increment = 1,
+    CurrentValue = T.leaveAfterMinutes,
+    Flag = "leaveAfterMinutes",
+    Callback = function(v)
+        T.leaveAfterMinutes = v
+        if T.autoLeaveEnabled then
+            startLeaveTimer() -- Restart timer with new value
+        end
+    end
+})
+
 TrialTab:CreateSection("Info")
 TrialTab:CreateParagraph({
     Title = "📋 Schedule",
-    Content = "Auto-joins trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:00\n• xx:00:00\n\nGrinds mobs automatically with tween movement\n\n⚠ If teleport fails, grind will still attempt from your current position."
+    Content = "Auto-joins trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:00\n• xx:00:00\n\nGrinds mobs automatically, leaves after set time if enabled.\n\n⚠ Make sure you're near the trial area!"
 })
 
 -- Settings Tab
@@ -704,6 +800,8 @@ task.spawn(function()
     if flags.noobUpgradesInterval then A.noobUpgradesInterval = flags.noobUpgradesInterval end
     if flags.meatDepositEnabled then A.meatDepositEnabled = true end
     if flags.meatDepositInterval then A.meatDepositInterval = flags.meatDepositInterval end
+    if flags.autoLeaveEnabled then T.autoLeaveEnabled = true end
+    if flags.leaveAfterMinutes then T.leaveAfterMinutes = flags.leaveAfterMinutes end
     local any = false
     for _, n in ipairs(ORES) do if S["m"..n] then any = true; break end end
     if any and isInMine() then
