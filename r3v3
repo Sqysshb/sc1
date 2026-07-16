@@ -1,4 +1,4 @@
--- Sqays Hub - Auto Mine + Auto Trial (Tamamen düzeltilmiş, getgenv sorunsuz)
+-- Sqays Hub - Auto Mine + Auto Trial (Final)
 local env = _G
 if env.NILoaded then return end
 env.NILoaded = true
@@ -135,6 +135,7 @@ local A = {
 }
 
 -- ===== TRIAL STATE =====
+-- UPDATE COORDINATES HERE using Dex if teleport fails
 local TRIAL_COORDS = {
     Easy = Vector3.new(853.2357788085938, 11.014291763305664, 13443.501953125),
     Medium = Vector3.new(878.9148559570312, 11.030077934265137, 13419.0625),
@@ -199,19 +200,13 @@ antiAFK(true)
 -- ===== MOVEMENT =====
 local activeTween = nil
 
-local function isCloseEnough(hrp, pos, threshold)
-    if not hrp then return false end
-    local d = Vector3.new(pos.X - hrp.Position.X, 0, pos.Z - hrp.Position.Z)
-    return d.Magnitude <= threshold
-end
-
 local function tweenTo(pos)
     local char = LP.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp then return end
-    if isCloseEnough(hrp, pos, 3) then return end
+    if (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(hrp.Position.X, 0, hrp.Position.Z)).Magnitude <= 3 then return end
     if activeTween then
         pcall(function() activeTween:Cancel() end)
         activeTween = nil
@@ -298,7 +293,7 @@ local function loop()
         if not hrp or not hum or hum.Health <= 0 then task.wait(0.3); continue end
         local orePos = getOrePosition(ore)
         if not orePos then task.wait(0.1); continue end
-        moveToOre(orePos, hrp)
+        tweenTo(orePos)
         if not S.running or env.NIStop then break end
         local waitStart = tick()
         while S.running and not env.NIStop do
@@ -350,95 +345,104 @@ local function meatDepositLoop()
     A.meatDepositRunning = false
 end
 
--- ===== TRIAL SYSTEM (DÜZELTİLDİ) =====
-local function getTrialRoomName()
-    local rooms = { Easy = "EasyTrialRoom", Medium = "MediumTrialRoom", Hard = "HardTrialRoom" }
-    return rooms[T.difficulty] or "EasyTrialRoom"
-end
-
+-- ===== TRIAL SYSTEM (FINAL) =====
 local function findTargetMob()
-    local gc = WS:FindFirstChild("__GAME_CONTENT")
-    if not gc then return nil end
-    local trials = gc:FindFirstChild("Trials")
-    if not trials then return nil end
-    local roomName = getTrialRoomName()
-    local trialRoom = trials:FindFirstChild(roomName)
-    if not trialRoom then
-        for _, room in ipairs(trials:GetChildren()) do
-            if room:IsA("Folder") or room:IsA("Model") then
-                trialRoom = room
-                break
-            end
-        end
-    end
-    if not trialRoom then return nil end
-    local mobs = trialRoom:FindFirstChild("Mobs")
-    if not mobs then return nil end
-    local ok, children = pcall(function() return mobs:GetChildren() end)
-    if not ok or not children then return nil end
-    local closest = nil
-    local closestDist = math.huge
     local char = LP.Character
-    local playerHrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not char then return nil end
+    local playerHrp = char:FindFirstChild("HumanoidRootPart")
     if not playerHrp then return nil end
-    for _, mob in ipairs(children) do
-        if mob and mob.Parent then
-            local hrp = mob:FindFirstChild("HumanoidRootPart") or mob.PrimaryPart
-            if hrp and hrp:IsA("BasePart") then
-                local hum = mob:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 then
-                    local dist = (playerHrp.Position - hrp.Position).Magnitude
+
+    local closestPart = nil
+    local closestDist = math.huge
+
+    for _, obj in ipairs(WS:GetDescendants()) do
+        if obj:IsA("Humanoid") and obj.Health > 0 then
+            local model = obj.Parent
+            if model and (model:IsA("Model") or model:IsA("Folder")) then
+                -- Try HumanoidRootPart first, then PrimaryPart, then any BasePart
+                local root = model:FindFirstChild("HumanoidRootPart")
+                if not root then root = model.PrimaryPart end
+                if not root then
+                    for _, child in ipairs(model:GetChildren()) do
+                        if child:IsA("BasePart") then
+                            root = child
+                            break
+                        end
+                    end
+                end
+                if root and root:IsA("BasePart") then
+                    local dist = (playerHrp.Position - root.Position).Magnitude
                     if dist < closestDist then
                         closestDist = dist
-                        closest = hrp
+                        closestPart = root
                     end
                 end
             end
         end
     end
-    return closest
+    return closestPart
 end
 
 local function teleportToTrial()
     local coord = TRIAL_COORDS[T.difficulty]
-    if not coord then return false end
-    local char = LP.Character
-    if not char then return false end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
+    if not coord then
+        warn("[Sqays Hub] No coordinates set for difficulty " .. T.difficulty)
+        return false
+    end
+
+    local char = LP.Character or LP.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart", 10)
+    if not hrp then
+        warn("[Sqays Hub] HumanoidRootPart not found, teleport cancelled.")
+        return false
+    end
+
     pcall(function()
         hrp.CFrame = CFrame.new(coord)
         hrp.AssemblyLinearVelocity = Vector3.new()
     end)
+
+    task.wait(0.5)
+    if (hrp.Position - coord).Magnitude > 15 then
+        warn("[Sqays Hub] Teleport failed, distance too large. Current position: " .. tostring(hrp.Position))
+        return false
+    end
+
+    print("[Sqays Hub] Teleport successful. Position: " .. tostring(hrp.Position))
     return true
 end
 
 local function grindTrial()
     T.grinding = true
-    print("[Sqays Hub] Trial grind başladı! Difficulty: " .. T.difficulty)
+    print("[Sqays Hub] Trial grind started! Difficulty: " .. T.difficulty)
     local grindStartTime = tick()
-    local maxGrindDuration = 60
+    local maxGrindDuration = 55
     local noMobWaitStart = nil
+
     while T.enabled and T.grinding and not env.NIStop do
         if tick() - grindStartTime > maxGrindDuration then
-            print("[Sqays Hub] Trial grind süresi doldu.")
+            print("[Sqays Hub] Grind duration expired.")
             break
         end
+
         local targetHrp = findTargetMob()
         if not targetHrp then
             if not noMobWaitStart then
                 noMobWaitStart = tick()
-            elseif tick() - noMobWaitStart > 10 then
-                print("[Sqays Hub] Mob bulunamadı, trial bitmiş olabilir.")
+            elseif tick() - noMobWaitStart > 8 then
+                print("[Sqays Hub] No mobs found for 8 seconds, stopping grind.")
                 break
             end
             task.wait(1)
             continue
         end
+
         noMobWaitStart = nil
+
         local char = LP.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then task.wait(0.5); continue end
+
         local dist = (hrp.Position - targetHrp.Position).Magnitude
         if dist > 5 then
             local targetPos = targetHrp.Position + Vector3.new(0, 0, 3)
@@ -451,68 +455,75 @@ local function grindTrial()
                 tween.Completed:Wait()
             end)
         end
+
+        -- Wait until mob dies or 4 seconds pass
         local waitStart = tick()
         while T.enabled and T.grinding and not env.NIStop do
             if tick() - grindStartTime > maxGrindDuration then break end
-            local newTarget = findTargetMob()
-            if not newTarget then break end
             if not targetHrp.Parent or not targetHrp.Parent.Parent then break end
-            if tick() - waitStart > 5 then break end
+            if tick() - waitStart > 4 then break end
             task.wait(0.1)
         end
         task.wait(0.1)
     end
+
     T.grinding = false
-    print("[Sqays Hub] Trial grind durdu.")
+    print("[Sqays Hub] Trial grind stopped.")
 end
 
 local function trialScheduler()
     T.schedulerRunning = true
-    print("[Sqays Hub] Trial scheduler başladı!")
+    print("[Sqays Hub] Trial scheduler started.")
+
     while T.enabled and not env.NIStop do
         local currentTime = os.date("*t")
         local minute = currentTime.min
         local second = currentTime.sec
-        -- Join: xx:29:10-15 veya xx:59:10-15
+
+        -- Join window: xx:29:10-15 or xx:59:10-15
         if (minute == 29 or minute == 59) and second >= 10 and second <= 15 then
             if T.lastJoinMinute ~= minute then
                 T.lastJoinMinute = minute
-                print("[Sqays Hub] Trial join zamanı! " .. minute .. ":" .. second)
+                print("[Sqays Hub] Trial join time! " .. minute .. ":" .. second)
                 if T.grinding then T.grinding = false; task.wait(0.5) end
-                if teleportToTrial() then
-                    print("[Sqays Hub] Teleport başarılı.")
+                local success = teleportToTrial()
+                if success then
                     if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="Joined "..T.difficulty.." Trial!", Duration=5, Image="info"}) end
                 else
-                    print("[Sqays Hub] Teleport başarısız!")
+                    if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="Teleport failed! Check coordinates.", Duration=5, Image="error"}) end
                 end
                 task.wait(5)
             end
         end
-        -- Grind: xx:30:00-05 veya xx:00:00-05
+
+        -- Grind window: xx:30:00-05 or xx:00:00-05
         if (minute == 30 or minute == 0) and second >= 0 and second <= 5 then
             if T.lastGrindMinute ~= minute then
                 T.lastGrindMinute = minute
-                print("[Sqays Hub] Grind başlatma zamanı! " .. minute .. ":" .. second)
-                task.wait(3) -- mobların spawn olması için bekle
+                print("[Sqays Hub] Grind start time! " .. minute .. ":" .. second)
+                task.wait(2) -- Wait for mobs to spawn
                 if not T.grinding then
-                    if findTargetMob() then
-                        print("[Sqays Hub] Moblar bulundu, grind başlıyor.")
+                    local target = findTargetMob()
+                    if target then
+                        print("[Sqays Hub] Mob found, starting grind.")
                         task.spawn(grindTrial)
                     else
-                        print("[Sqays Hub] Mob yok, grind başlatılamadı.")
+                        print("[Sqays Hub] No mob found! Trial may not have started.")
                         if Rayfield then Rayfield:Notify({Title="Auto Trial", Content="No mobs found! Trial may not have started.", Duration=5, Image="warning"}) end
                     end
                 end
                 task.wait(5)
             end
         end
-        -- Sıfırla
+
+        -- Reset flags on minute change
         if minute ~= 29 and minute ~= 59 then T.lastJoinMinute = -1 end
         if minute ~= 30 and minute ~= 0 then T.lastGrindMinute = -1 end
+
         task.wait(1)
     end
     T.schedulerRunning = false
-    print("[Sqays Hub] Trial scheduler durdu.")
+    print("[Sqays Hub] Trial scheduler stopped.")
 end
 
 -- ===== RAYFIELD =====
@@ -528,8 +539,8 @@ if not Rayfield then warn("[Sqays Hub] Failed to load Rayfield UI"); return end
 local Window = Rayfield:CreateWindow({
     Name = "Sqays Hub - " .. gameName,
     Icon = 0,
-    LoadingTitle = "Made by Exotic",
-    LoadingSubtitle = "Credits to Exotic | " .. execName,
+    LoadingTitle = "Made by Sqays & Exotic",
+    LoadingSubtitle = "Credits to Sqays & Exotic | " .. execName,
     ShowText = "Sqays Hub",
     Theme = "DarkBlue",
     ToggleUIKeybind = Enum.KeyCode.K,
@@ -618,7 +629,7 @@ TrialTab:CreateDropdown({
 TrialTab:CreateSection("Info")
 TrialTab:CreateParagraph({
     Title = "📋 Schedule",
-    Content = "Auto-joins trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:00\n• xx:00:00\n\nGrinds mobs automatically with tween movement\n\n⚠ Make sure you're in the Trial area before enabling!"
+    Content = "Auto-joins trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:00\n• xx:00:00\n\nGrinds mobs automatically with tween movement\n\n⚠ If teleport fails, update coordinates in script."
 })
 
 -- Settings Tab
