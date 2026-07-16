@@ -477,14 +477,12 @@ local function mobLoop()
         warn("[Mob] Distance to target: " .. dist)
         
         if dist > 5 then
-            warn("[Mob] Starting tween to target...")
+            warn("[Mob] Moving to target...")
             pcall(function()
-                local tweenInfo = TweenInfo.new(dist * M.tweenSpeed, Enum.EasingStyle.Linear)
-                local tween = TS:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetHrp.Position + Vector3.new(0, 0, 3))})
-                tween:Play()
-                tween.Completed:Wait()
-                warn("[Mob] Tween completed")
+                hrp.CFrame = CFrame.new(targetHrp.Position + Vector3.new(0, 0, 3))
+                pcall(function() hrp.AssemblyLinearVelocity = Vector3.new() end)
             end)
+            warn("[Mob] Movement completed")
         else
             warn("[Mob] Already close to target")
         end
@@ -596,8 +594,10 @@ for _, mobName in ipairs(MOBS) do
         CurrentValue = false,
         Flag = flag,
         Callback = function(v)
+            warn("[Mob] Toggle callback: " .. mobName .. " = " .. tostring(v))
             M[flag] = v
             if v and not M.running then
+                warn("[Mob] Starting mob loop...")
                 M.running = true
                 task.spawn(mobLoop)
                 Rayfield:Notify({
