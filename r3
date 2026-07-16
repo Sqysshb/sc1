@@ -1,4 +1,4 @@
--- Sqays Hub - Auto Mine + Auto Trial
+-- Sqays Hub - Auto Mine + Auto Trial (Düzeltilmiş)
 local env = getgenv and getgenv() or _G
 if env.NILoaded then return end
 env.NILoaded = true; env.NIStop = false
@@ -141,11 +141,21 @@ local A = {
     meatDepositRunning = false
 }
 
--- ===== MOB STATE =====
-local MOBS = {"Goblin","Skeleton","Orc","Pirate","Ninja","Warrior","Pirate Captain","Samurai","Pirate Admiral","Samurai Master","Dark knight","Dark Commander"}
-local M = {
-    running = false,
-    tweenSpeed = 0.6
+-- ===== TRIAL STATE =====
+-- GÜNCELLENMİŞ: Trial odalarına giriş koordinatları
+local TRIAL_COORDS = {
+    Easy = Vector3.new(853.2357788085938, 11.014291763305664, 13443.501953125),
+    Medium = Vector3.new(878.9148559570312, 11.030077934265137, 13419.0625),
+    Hard = Vector3.new(905.1489868164062, 11.014291763305664, 13443.5712890625)
+}
+
+local T = {
+    enabled = false,
+    difficulty = "Easy",
+    grinding = false,
+    schedulerRunning = false,
+    lastJoinMinute = -1, -- Tekrar joinlemeyi engellemek için
+    lastGrindMinute = -1  -- Tekrar grind başlatmayı engellemek için
 }
 
 -- ===== NO CLIP =====
@@ -372,150 +382,264 @@ local function meatDepositLoop()
     A.meatDepositRunning = false
 end
 
--- ===== AUTO MOB SYSTEM =====
-local function findTargetMob(mobName)
-    warn("[Mob] Finding target: " .. mobName)
+-- ===== AUTO TRIAL SYSTEM (DÜZELTİLMİŞ) =====
+
+-- Trial odasının adını difficulty'e göre döndür
+local function getTrialRoomName()
+    local rooms = {
+        Easy = "EasyTrialRoom",
+        Medium = "MediumTrialRoom",
+        Hard = "HardTrialRoom"
+    }
+    return rooms[T.difficulty] or "EasyTrialRoom"
+end
+
+-- Trial odasındaki mobları bul
+local function findTargetMob()
     local gc = WS:FindFirstChild("__GAME_CONTENT")
-    if not gc then warn("[Mob] No __GAME_CONTENT found"); return nil end
+    if not gc then return nil end
     
-    local mobs = gc:FindFirstChild("Mobs")
-    if not mobs then warn("[Mob] No Mobs folder found"); return nil end
+    local trials = gc:FindFirstChild("Trials")
+    if not trials then return nil end
+    
+    -- Seçilen zorluğa göre trial odasını bul
+    local roomName = getTrialRoomName()
+    local trialRoom = trials:FindFirstChild(roomName)
+    if not trialRoom then
+        -- Eğer oda bulunamazsa, tüm trial odalarını kontrol et
+        for _, room in ipairs(trials:GetChildren()) do
+            if room:IsA("Folder") or room:IsA("Model") then
+                trialRoom = room
+                break
+            end
+        end
+    end
+    if not trialRoom then return nil end
+    
+    local mobs = trialRoom:FindFirstChild("Mobs")
+    if not mobs then return nil end
     
     local ok, children = pcall(function() return mobs:GetChildren() end)
-    if not ok or not children then warn("[Mob] Failed to get children"); return nil end
-    
-    warn("[Mob] Total mobs in folder: " .. #children)
-    warn("[Mob] All mob names in folder:")
-    for _, mob in ipairs(children) do
-        warn("  - " .. mob.Name)
-    end
+    if not ok or not children then return nil end
     
     local closest = nil
     local closestDist = math.huge
+    local char = LP.Character
+    local playerHrp = char and char:FindFirstChild("HumanoidRootPart")
+    
+    if not playerHrp then return nil end
     
     for _, mob in ipairs(children) do
-        if mob.Name == mobName and mob.Parent then
-            warn("[Mob] Found mob with name: " .. mobName)
+        if mob and mob.Parent then
+            -- Mob modelinin içinde HumanoidRootPart ara
             local hrp = mob:FindFirstChild("HumanoidRootPart")
+            if not hrp then
+                -- Bazı moblar farklı yapıda olabilir, PrimaryPart'i kontrol et
+                hrp = mob.PrimaryPart
+            end
+            
             if hrp and hrp:IsA("BasePart") then
                 local hum = mob:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 then
-                    local char = LP.Character
-                    local playerHrp = char and char:FindFirstChild("HumanoidRootPart")
-                    if playerHrp then
-                        local dist = (playerHrp.Position - hrp.Position).Magnitude
-                        if dist < closestDist then
-                            closestDist = dist
-                            closest = hrp
-                        end
+                    local dist = (playerHrp.Position - hrp.Position).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        closest = hrp
                     end
                 end
             end
         end
     end
     
-    warn("[Mob] Closest mob found: " .. tostring(closest ~= nil))
     return closest
 end
 
-local function isMobAlive(mobName)
-    local gc = WS:FindFirstChild("__GAME_CONTENT")
-    local mobs = gc and gc:FindFirstChild("Mobs")
-    if not mobs then return false end
+-- Trial odasına teleport
+local function teleportToTrial()
+    local coord = TRIAL_COORDS[T.difficulty]
+    if not coord then return false end
     
-    local ok, children = pcall(function() return mobs:GetChildren() end)
-    if not ok or not children then return false end
+    local char = LP.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
     
-    for _, mob in ipairs(children) do
-        if mob.Name == mobName and mob.Parent then
-            local hum = mob:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                return true
-            end
-        end
-    end
+    pcall(function()
+        hrp.CFrame = CFrame.new(coord)
+        hrp.AssemblyLinearVelocity = Vector3.new()
+    end)
     
-    return false
+    return true
 end
 
-local function mobLoop()
-    M.running = true
-    warn("[Mob] Mob loop started")
+-- Trial grinding fonksiyonu (düzeltilmiş)
+local function grindTrial()
+    T.grinding = true
+    print("[Sqays Hub] Trial grind başladı! Difficulty: " .. T.difficulty)
     
-    while M.running and not env.NIStop do
-        local targetMob = nil
-        local anyEnabled = false
-        
-        for _, mobName in ipairs(MOBS) do
-            local flag = "mob" .. mobName:gsub(" ", "")
-            if M[flag] then
-                anyEnabled = true
-                warn("[Mob] Checking mob: " .. mobName .. " (enabled: " .. tostring(M[flag]) .. ")")
-                if isMobAlive(mobName) then
-                    targetMob = mobName
-                    warn("[Mob] Target mob selected: " .. targetMob)
-                    break
-                end
-            end
-        end
-        
-        if not anyEnabled then
-            warn("[Mob] No mobs enabled, stopping loop")
+    local grindStartTime = tick()
+    local maxGrindDuration = 60 -- Maksimum 60 saniye grind (trial süresi kadar)
+    local noMobWaitStart = nil
+    
+    while T.enabled and T.grinding and not env.NIStop do
+        -- Süre kontrolü (60 saniyeden fazla grind yapma)
+        if tick() - grindStartTime > maxGrindDuration then
+            print("[Sqays Hub] Trial grind süresi doldu, durduruluyor...")
             break
         end
         
-        if not targetMob then
-            warn("[Mob] No target mob found, waiting...")
+        local targetHrp = findTargetMob()
+        if not targetHrp then
+            if not noMobWaitStart then
+                noMobWaitStart = tick()
+            elseif tick() - noMobWaitStart > 10 then
+                -- 10 saniyedir mob yok, trial bitmiş olabilir
+                print("[Sqays Hub] Mob bulunamadı, trial bitmiş olabilir.")
+                break
+            end
             task.wait(1)
             continue
         end
         
-        local targetHrp = findTargetMob(targetMob)
-        if not targetHrp then
-            warn("[Mob] No target HRP found, waiting...")
-            task.wait(1)
-            continue
-        end
+        noMobWaitStart = nil -- Mob bulundu, sayacı sıfırla
         
         local char = LP.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then 
-            warn("[Mob] No player HRP found")
-            task.wait(0.5); continue 
-        end
+        if not hrp then task.wait(0.5); continue end
         
         local dist = (hrp.Position - targetHrp.Position).Magnitude
-        warn("[Mob] Distance to target: " .. dist)
         
+        -- Moba doğru tween
         if dist > 5 then
-            warn("[Mob] Moving to target...")
+            local targetPos = targetHrp.Position + Vector3.new(0, 0, 3) -- Mobun biraz önüne git
+            local tweenDist = (hrp.Position - targetPos).Magnitude
+            local tweenDuration = math.max(0.3, tweenDist * S.tweenSpeed * 0.3)
+            
             pcall(function()
-                hrp.CFrame = CFrame.new(targetHrp.Position + Vector3.new(0, 0, 3))
-                pcall(function() hrp.AssemblyLinearVelocity = Vector3.new() end)
+                local tweenInfo = TweenInfo.new(tweenDuration, Enum.EasingStyle.Linear)
+                local tween = TS:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetPos)})
+                tween:Play()
+                tween.Completed:Wait()
             end)
-            warn("[Mob] Movement completed")
-        else
-            warn("[Mob] Already close to target")
         end
         
+        -- Mobun ölmesini bekle veya yeni hedefe geç
         local waitStart = tick()
-        while M.running and not env.NIStop do
-            if not isMobAlive(targetMob) then
-                warn("[Mob] Target mob dead")
+        while T.enabled and T.grinding and not env.NIStop do
+            -- Süre kontrolü
+            if tick() - grindStartTime > maxGrindDuration then break end
+            
+            local newTarget = findTargetMob()
+            if not newTarget then
+                -- Hiç mob kalmamış
                 break
             end
-            if tick() - waitStart > 30 then
-                warn("[Mob] Timeout waiting for mob death")
+            
+            -- Eğer hedef mob öldüyse veya çok uzaklaştıysa yeni hedefe geç
+            if not targetHrp.Parent or not targetHrp.Parent.Parent then
                 break
             end
+            
+            -- 5 saniyeden fazla aynı mobda kalma
+            if tick() - waitStart > 5 then
+                break
+            end
+            
             task.wait(0.1)
         end
         
-        task.wait(0.5)
+        task.wait(0.1) -- Hızlı hedef değişimi için kısa bekleme
     end
     
-    M.running = false
-    warn("[Mob] Mob loop stopped")
+    T.grinding = false
+    print("[Sqays Hub] Trial grind durdu.")
+end
+
+-- Trial scheduler (düzeltilmiş)
+local function trialScheduler()
+    T.schedulerRunning = true
+    print("[Sqays Hub] Trial scheduler başladı!")
+    
+    while T.enabled and not env.NIStop do
+        local currentTime = os.date("*t")
+        local minute = currentTime.min
+        local second = currentTime.sec
+        
+        -- Join kontrolü: xx:29:10 veya xx:59:10
+        if (minute == 29 or minute == 59) and second >= 10 and second <= 15 then
+            if T.lastJoinMinute ~= minute then
+                T.lastJoinMinute = minute
+                print("[Sqays Hub] Trial join zamanı! Dakika: " .. minute .. " Saniye: " .. second)
+                
+                -- Mevcut grind'ı durdur
+                if T.grinding then
+                    T.grinding = false
+                    task.wait(0.5)
+                end
+                
+                if teleportToTrial() then
+                    print("[Sqays Hub] Trial odasına teleport başarılı! Difficulty: " .. T.difficulty)
+                    if Rayfield then
+                        Rayfield:Notify({
+                            Title = "Auto Trial",
+                            Content = "Joined " .. T.difficulty .. " Trial!",
+                            Duration = 5,
+                            Image = "info"
+                        })
+                    end
+                else
+                    print("[Sqays Hub] Trial teleport başarısız!")
+                end
+                
+                task.wait(5) -- Tekrar joinlemeyi engelle
+            end
+        end
+        
+        -- Grind kontrolü: xx:30:00 veya xx:00:00
+        if (minute == 30 or minute == 0) and second >= 0 and second <= 5 then
+            if T.lastGrindMinute ~= minute then
+                T.lastGrindMinute = minute
+                print("[Sqays Hub] Trial grind başlatma zamanı! Dakika: " .. minute .. " Saniye: " .. second)
+                
+                -- Kısa bir bekleme (mobların spawn olması için)
+                task.wait(3)
+                
+                if not T.grinding then
+                    -- Önce mobları kontrol et
+                    local mob = findTargetMob()
+                    if mob then
+                        print("[Sqays Hub] Moblar bulundu, grind başlatılıyor...")
+                        task.spawn(grindTrial)
+                    else
+                        print("[Sqays Hub] Mob bulunamadı, grind başlatılamadı! (Trial başlamamış olabilir)")
+                        if Rayfield then
+                            Rayfield:Notify({
+                                Title = "Auto Trial",
+                                Content = "No mobs found! Trial may not have started.",
+                                Duration = 5,
+                                Image = "warning"
+                            })
+                        end
+                    end
+                end
+                
+                task.wait(5) -- Tekrar grind başlatmayı engelle
+            end
+        end
+        
+        -- Join ve grind dakikalarını sıfırla (yeni döngü için)
+        if minute ~= 29 and minute ~= 59 then
+            T.lastJoinMinute = -1
+        end
+        if minute ~= 30 and minute ~= 0 then
+            T.lastGrindMinute = -1
+        end
+        
+        task.wait(1)
+    end
+    
+    T.schedulerRunning = false
+    print("[Sqays Hub] Trial scheduler durdu.")
 end
 
 -- ===== RAYFIELD =====
@@ -561,7 +685,7 @@ local Window = Rayfield:CreateWindow({
 })
 
 local Main = Window:CreateTab("⛏ Mine")
-local Realm3Tab = Window:CreateTab("🌍 Realm 3")
+local TrialTab = Window:CreateTab("⚔ Auto Trial")
 local AutoTab = Window:CreateTab("🤖 Automation")
 local SetTab = Window:CreateTab("⚙ Settings")
 
@@ -595,32 +719,48 @@ for _, tier in ipairs(tiers) do
     end
 end
 
--- Realm 3 Tab
-Realm3Tab:CreateSection("Auto Mob")
-for _, mobName in ipairs(MOBS) do
-    local flag = "mob" .. mobName:gsub(" ", "")
-    M[flag] = false
-    Realm3Tab:CreateToggle({
-        Name = mobName,
-        CurrentValue = false,
-        Flag = flag,
-        Callback = function(v)
-            warn("[Mob] Toggle callback: " .. mobName .. " = " .. tostring(v))
-            M[flag] = v
-            if v and not M.running then
-                warn("[Mob] Starting mob loop...")
-                M.running = true
-                task.spawn(mobLoop)
-                Rayfield:Notify({
-                    Title = "Realm 3",
-                    Content = "Auto Mob started!",
-                    Duration = 5,
-                    Image = "info"
-                })
-            end
+-- Auto Trial Tab
+TrialTab:CreateSection("Auto Trial")
+TrialTab:CreateToggle({
+    Name = "Enable Auto Trial",
+    CurrentValue = false,
+    Flag = "trialEnabled",
+    Callback = function(v)
+        T.enabled = v
+        if v and not T.schedulerRunning then
+            task.spawn(trialScheduler)
+            Rayfield:Notify({
+                Title = "Auto Trial",
+                Content = "Auto Trial started! Will join at xx:29:10 or xx:59:10",
+                Duration = 5,
+                Image = "info"
+            })
         end
-    })
-end
+    end
+})
+
+TrialTab:CreateSection("Difficulty")
+TrialTab:CreateDropdown({
+    Name = "Select Difficulty",
+    Options = {"Easy", "Medium", "Hard"},
+    CurrentOption = "Easy",
+    Flag = "trialDifficulty",
+    Callback = function(v)
+        T.difficulty = v
+        -- Eğer şu anda grinding varsa, durdur ve yeni difficulty ile devam et
+        if T.grinding then
+            T.grinding = false
+            task.wait(0.5)
+            task.spawn(grindTrial)
+        end
+    end
+})
+
+TrialTab:CreateSection("Info")
+TrialTab:CreateParagraph({
+    Title = "📋 Schedule",
+    Content = "Auto-joins trial every 30 minutes:\n• xx:29:10 (1 min before xx:30:00)\n• xx:59:10 (1 min before xx:00:00)\n\nAuto-grind starts at:\n• xx:30:00\n• xx:00:00\n\nGrinds mobs automatically with tween movement\n\n⚠ Make sure you're in the Trial area before enabling!"
+})
 
 -- Settings Tab
 SetTab:CreateSection("Info")
@@ -633,15 +773,6 @@ SetTab:CreateSlider({
     Increment = 0.1,
     CurrentValue = S.tweenSpeed,
     Callback = function(v) S.tweenSpeed = v end
-})
-
-SetTab:CreateSection("Mob Speed")
-SetTab:CreateSlider({
-    Name = "Mob Speed (s)",
-    Range = {0.2, 2},
-    Increment = 0.1,
-    CurrentValue = M.tweenSpeed,
-    Callback = function(v) M.tweenSpeed = v end
 })
 
 SetTab:CreateSection("Ghost Mode")
@@ -729,11 +860,7 @@ task.spawn(function()
         if flags[flag] then S[flag] = true end
     end
     
-    for _, mobName in ipairs(MOBS) do
-        local flag = "mob" .. mobName:gsub(" ", "")
-        if flags[flag] then M[flag] = true end
-    end
-    
+    if flags.trialEnabled then T.enabled = true end
     if flags.noobUpgradesEnabled then A.noobUpgradesEnabled = true end
     if flags.noobUpgradesInterval then A.noobUpgradesInterval = flags.noobUpgradesInterval end
     if flags.meatDepositEnabled then A.meatDepositEnabled = true end
@@ -755,11 +882,10 @@ task.spawn(function()
         task.spawn(meatDepositLoop)
     end
     
-    local anyMob = false; for _, mobName in ipairs(MOBS) do local flag = "mob" .. mobName:gsub(" ", ""); if M[flag] then anyMob = true; break end end
-    if anyMob then
+    if T.enabled then
         task.wait(2)
-        M.running = true; task.spawn(mobLoop)
+        task.spawn(trialScheduler)
     end
 end)
 
-print("[Sqays Hub] Ready - " .. execName .. " | " .. gameName)
+print("[Sqays Hub] Ready - " .. execName .. " |
