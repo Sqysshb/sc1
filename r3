@@ -550,9 +550,14 @@ task.spawn(function()
         S.running = true; task.spawn(loop)
     end
     
-    if T.enabled then
+    if A.noobUpgradesEnabled then
         task.wait(2)
-        task.spawn(trialScheduler)
+        task.spawn(noobUpgradesLoop)
+    end
+    
+    if A.meatDepositEnabled then
+        task.wait(2)
+        task.spawn(meatDepositLoop)
     end
 end)
 
